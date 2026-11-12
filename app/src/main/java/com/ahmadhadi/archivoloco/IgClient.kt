@@ -28,7 +28,7 @@ private class WebViewCookieJar : CookieJar {
     private val cm = CookieManager.getInstance()
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        if (!url.host.endsWith("instagram.com")) return emptyList()
+        if (!HostPolicy.isInstagram(url.host)) return emptyList()
         val raw = cm.getCookie(url.toString()) ?: return emptyList()
         return raw.split(";").mapNotNull { part ->
             val i = part.indexOf('=')
@@ -42,7 +42,7 @@ private class WebViewCookieJar : CookieJar {
     }
 
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        if (!url.host.endsWith("instagram.com")) return
+        if (!HostPolicy.isInstagram(url.host)) return
         cookies.forEach { cm.setCookie("https://www.instagram.com", it.toString()) }
         cm.flush()
     }
@@ -55,10 +55,12 @@ class IgClient {
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
+        // Only Instagram + Meta CDNs over HTTPS, checked on every hop including redirects.
+        .addNetworkInterceptor(HostPolicy.enforce)
         .addInterceptor { chain ->
             val req = chain.request()
             val b = req.newBuilder().header("user-agent", IgConstants.USER_AGENT)
-            if (req.url.host.endsWith("instagram.com")) {
+            if (HostPolicy.isInstagram(req.url.host)) {
                 IgConstants.SHARED_HEADERS.forEach { (k, v) ->
                     if (req.header(k) == null) b.header(k, v)
                 }

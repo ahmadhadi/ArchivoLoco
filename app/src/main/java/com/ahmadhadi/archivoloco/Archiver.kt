@@ -34,6 +34,9 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
     private fun log(s: String) = JobBus.log(s)
 
     private fun open(folder: String) {
+        require(folder.isNotEmpty() && !folder.startsWith(".") && ".." !in folder && "/" !in folder) {
+            "Invalid folder name"
+        }
         out = OutputDir(context, folder)
         dedup = DedupLog(context, folder, disabled = opts.redownload)
     }
@@ -176,9 +179,9 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
         currentCoroutineContext().ensureActive()
         JobBus.stats { it.copy(posts = it.posts + 1) }
         val pk = node.optString("pk")
-        val id = node.optString("id").ifEmpty { pk }
+        val id = safeFileName(node.optString("id").ifEmpty { pk })
         val code = node.optString("code").takeIf { it.isNotEmpty() }
-        if (pk.isEmpty()) return false
+        if (pk.isEmpty() || !pk.all { it.isDigit() }) return false
         val permalink = "${IgConstants.BASE}/p/${code ?: pk}/"
         val infoUrl = "${IgConstants.BASE}/api/v1/media/$pk/info/"
         try {
@@ -243,7 +246,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
      * `image_versions2` candidate, like save_image_versions2.
      */
     private suspend fun saveItem(item: JSONObject, sub: String?, takenAt: Long) {
-        val id = item.optString("id").ifEmpty { item.optString("pk") }
+        val id = safeFileName(item.optString("id").ifEmpty { item.optString("pk") })
         val videos = item.optJSONArray("video_versions")
         if (videos != null && videos.length() > 0) {
             best(videos)?.let { url ->

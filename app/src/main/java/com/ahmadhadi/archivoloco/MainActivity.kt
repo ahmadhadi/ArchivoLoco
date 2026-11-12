@@ -133,11 +133,15 @@ fun parseUsername(raw: String): String? {
     val s = raw.trim()
     Regex("instagram\\.com/([A-Za-z0-9._]+)").find(s)?.let { m ->
         val u = m.groupValues[1]
-        if (u !in setOf("p", "reel", "reels", "stories", "explore", "accounts")) return u
+        if (u !in setOf("p", "reel", "reels", "stories", "explore", "accounts") && isValidUsername(u)) return u
     }
     val plain = s.removePrefix("@")
-    return if (Regex("^[A-Za-z0-9._]{1,30}$").matches(plain)) plain else null
+    return plain.takeIf { isValidUsername(it) }
 }
+
+/** Instagram usernames: letters, digits, '.', '_'; never leading '.' or '..' (no path tricks). */
+private fun isValidUsername(u: String) =
+    Regex("^[A-Za-z0-9._]{1,30}$").matches(u) && !u.startsWith(".") && ".." !in u
 
 @Composable
 private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, loginTick: Int) {

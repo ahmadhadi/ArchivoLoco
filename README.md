@@ -67,6 +67,21 @@ base64 -w0 archivoloco.keystore   # → secret ARCHIVOLOCO_KEYSTORE_B64
 
 plus `ARCHIVOLOCO_KEYSTORE_PASSWORD`.
 
+## Privacy & security
+
+- **Talks only to Instagram.** Every request, including redirects, is checked against an allowlist:
+  `*.instagram.com` and Meta's media CDNs (`*.cdninstagram.com`, `*.fbcdn.net`), HTTPS only. Anything
+  else is blocked (`HostPolicy.kt`). No analytics, crash reporting, ads or telemetry SDKs.
+- **Your session cookie goes only to `*.instagram.com`**, never to CDNs or anywhere else.
+- **No background activity on its own.** Work runs only after you tap Start, shows a notification with
+  Stop, ends when the job finishes, and stops if you swipe the app away. No boot receivers, alarms,
+  scheduled jobs or auto-restart.
+- **Login page is locked down:** no file access, no third-party cookies, and links outside
+  Instagram/Facebook open in your normal browser.
+- **Nothing leaves the phone in backups:** cloud backup and device-to-device transfer are disabled.
+- **HTTPS only, system CAs only:** cleartext is banned and user-installed certificates are not trusted.
+- **Build pipeline:** GitHub Actions pinned to exact commits, least-privilege token.
+
 ## Notes
 
 - Only archives what your account can already see. Use it for your own backups and respect other people's content.

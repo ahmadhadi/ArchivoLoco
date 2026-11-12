@@ -5,7 +5,9 @@ package com.ahmadhadi.archivoloco
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.content.Intent
 import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -91,14 +93,36 @@ class LoginActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize().padding(padding),
                         factory = { ctx ->
                             WebView(ctx).apply {
-                                cm.setAcceptThirdPartyCookies(this, true)
                                 settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
                                 // Same desktop UA as the API client so the session matches the client hints.
                                 settings.userAgentString = IgConstants.USER_AGENT
                                 settings.useWideViewPort = true
                                 settings.loadWithOverviewMode = true
+                                // Hardening: no local file/content access, no third-party cookies.
+                                settings.allowFileAccess = false
+                                settings.allowContentAccess = false
+                                settings.javaScriptCanOpenWindowsAutomatically = false
+                                settings.setSupportMultipleWindows(false)
+                                settings.setGeolocationEnabled(false)
+                                cm.setAcceptThirdPartyCookies(this, false)
                                 webViewClient = object : WebViewClient() {
+                                    // Top-level navigation stays on Instagram/Facebook login pages;
+                                    // anything else (help links, ads) opens in the real browser.
+                                    override fun shouldOverrideUrlLoading(
+                                        view: WebView,
+                                        request: WebResourceRequest,
+                                    ): Boolean {
+                                        val u = request.url
+                                        if (u.scheme == "https" && HostPolicy.isAllowedInLogin(u.host)) return false
+                                        if (u.scheme == "https" || u.scheme == "http") {
+                                            runCatching {
+                                                startActivity(Intent(Intent.ACTION_VIEW, u).addCategory(Intent.CATEGORY_BROWSABLE))
+                                            }
+                                        }
+                                        return true
+                                    }
+
                                     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                                         loading = true
                                     }
