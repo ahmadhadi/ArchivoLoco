@@ -93,6 +93,14 @@ class IgClient {
         if (r.code in 300..399) {
             val loc = r.header("location").orEmpty()
             if ("login" in loc || "challenge" in loc) throw SessionExpiredException()
+            val path = runCatching { loc.toHttpUrl().encodedPath }.getOrDefault(loc)
+            if (path == "/" || path.isEmpty()) {
+                // Instagram bounces API calls to its homepage when it won't serve them.
+                throw IgException(
+                    "Instagram refused the request (session not accepted, or the profile doesn't exist). " +
+                        "Try logging out and in again.",
+                )
+            }
             throw IgException("Unexpected redirect to $loc")
         }
     }

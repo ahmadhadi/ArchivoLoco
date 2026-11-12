@@ -42,7 +42,9 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
     }
 
     private fun requireLogin() {
-        if (client.csrfToken() == null) throw IgException("Not logged in - tap \"Log in\" first.")
+        if (!Session.isLoggedIn() || client.csrfToken() == null) {
+            throw IgException("Not logged in - tap \"Log in\" first.")
+        }
     }
 
     // ---------------------------------------------------------------- profile mode
@@ -55,7 +57,18 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
 
         val user = try {
             client.webProfileInfo(username)
+        } catch (e: IgException) {
+            // Instagram answers 404 when no account has this exact username.
+            if (e.message.orEmpty().startsWith("HTTP 404")) {
+                throw IgException(
+                    "No Instagram account named @$username. Check the exact handle - easiest is " +
+                        "Instagram → profile → ⋯ → Share → ArchivoLoco.",
+                )
+            }
+            log("⚠ Could not get profile info: ${e.message}")
+            null
         } catch (e: IOException) {
+            if (e is SessionExpiredException) throw e
             log("⚠ Could not get profile info: ${e.message}")
             null
         }
