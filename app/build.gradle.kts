@@ -23,10 +23,11 @@ android {
         if (ksFile.exists()) {
             create("stable") {
                 storeFile = ksFile
-                storePassword = System.getenv("ARCHIVOLOCO_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("ARCHIVOLOCO_KEY_ALIAS") ?: "archivoloco"
-                keyPassword = System.getenv("ARCHIVOLOCO_KEY_PASSWORD")
-                    ?: System.getenv("ARCHIVOLOCO_KEYSTORE_PASSWORD")
+                // Unset GitHub secrets arrive as empty strings, so treat blank as missing.
+                fun env(name: String) = System.getenv(name)?.takeIf { it.isNotBlank() }
+                storePassword = env("ARCHIVOLOCO_KEYSTORE_PASSWORD")
+                keyAlias = env("ARCHIVOLOCO_KEY_ALIAS") ?: "archivoloco"
+                keyPassword = env("ARCHIVOLOCO_KEY_PASSWORD") ?: env("ARCHIVOLOCO_KEYSTORE_PASSWORD")
             }
         }
     }
