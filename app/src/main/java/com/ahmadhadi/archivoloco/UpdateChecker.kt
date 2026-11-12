@@ -56,7 +56,11 @@ object UpdateChecker {
             .header("user-agent", "ArchivoLoco")
             .build()
         val json = client.newCall(req).execute().use { r ->
-            if (!r.isSuccessful) throw IgException("GitHub returned HTTP ${r.code}")
+            when {
+                r.code == 404 -> throw IgException("release info isn't publicly available (is the GitHub repo private?)")
+                r.code == 403 || r.code == 429 -> throw IgException("GitHub is rate-limiting this network; try again later")
+                !r.isSuccessful -> throw IgException("GitHub returned HTTP ${r.code}")
+            }
             JSONObject(r.body?.string().orEmpty())
         }
         prefs(ctx).edit().putLong(KEY_LAST, System.currentTimeMillis()).apply()
