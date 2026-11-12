@@ -1,84 +1,114 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.ahmadhadi.archivoloco
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.view.View
-import android.widget.Button
-import android.widget.CheckBox
-import android.widget.EditText
-import android.widget.RadioButton
-import android.widget.TextView
-import android.widget.Toast
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
-class MainActivity : Activity() {
-    private val ui = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-
-    private lateinit var status: TextView
-    private lateinit var btnLogin: Button
-    private lateinit var modeProfile: RadioButton
-    private lateinit var username: EditText
-    private lateinit var optComments: CheckBox
-    private lateinit var optReplies: CheckBox
-    private lateinit var optUnsave: CheckBox
-    private lateinit var optRedownload: CheckBox
-    private lateinit var btnStart: Button
-    private lateinit var btnStop: Button
-    private lateinit var progress: TextView
-    private lateinit var log: TextView
+class MainActivity : ComponentActivity() {
+    /** Username handed over via "Share → ArchivoLoco" from the Instagram app. */
+    private val sharedUsername = mutableStateOf<String?>(null)
+    private val loginTick = mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-        status = findViewById(R.id.status)
-        btnLogin = findViewById(R.id.btnLogin)
-        modeProfile = findViewById(R.id.modeProfile)
-        username = findViewById(R.id.username)
-        optComments = findViewById(R.id.optComments)
-        optReplies = findViewById(R.id.optReplies)
-        optUnsave = findViewById(R.id.optUnsave)
-        optRedownload = findViewById(R.id.optRedownload)
-        btnStart = findViewById(R.id.btnStart)
-        btnStop = findViewById(R.id.btnStop)
-        progress = findViewById(R.id.progress)
-        log = findViewById(R.id.log)
-
-        btnLogin.setOnClickListener {
-            if (Session.isLoggedIn()) {
-                AlertDialog.Builder(this)
-                    .setMessage("Log out of Instagram in ArchivoLoco?")
-                    .setPositiveButton(R.string.log_out) { _, _ -> Session.logOut { refreshLogin() } }
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show()
-            } else {
-                startActivityForResult(Intent(this, LoginActivity::class.java), 1)
-            }
-        }
-        findViewById<android.widget.RadioGroup>(R.id.mode).setOnCheckedChangeListener { _, _ -> refreshMode() }
-        optReplies.setOnCheckedChangeListener { _, checked -> if (checked) optComments.isChecked = true }
-        btnStart.setOnClickListener { start() }
-        btnStop.setOnClickListener { ArchiveService.stop(this) }
-
         handleShare(intent)
-        refreshMode()
-        askNotificationPermission()
-
-        ui.launch {
-            JobBus.state.collect { s ->
-                btnStart.isEnabled = !s.running
-                btnStop.isEnabled = s.running
-                progress.text = if (s.title.isEmpty()) "" else
-                    "${s.title}${if (s.running) " — running" else ""}\n${s.stats.summary()}"
-                log.text = s.lines.takeLast(200).reversed().joinToString("\n")
+        setContent {
+            ArchivoTheme {
+                MainScreen(
+                    sharedUsername = sharedUsername.value,
+                    onSharedConsumed = { sharedUsername.value = null },
+                    loginTick = loginTick.value,
+                )
             }
         }
     }
@@ -90,78 +120,413 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        refreshLogin()
+        loginTick.value++ // re-check the session when returning from the login screen
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        refreshLogin()
-    }
-
-    override fun onDestroy() {
-        ui.cancel()
-        super.onDestroy()
-    }
-
-    private fun refreshLogin() {
-        val ok = Session.isLoggedIn()
-        status.setText(if (ok) R.string.logged_in_as else R.string.not_logged_in)
-        btnLogin.setText(if (ok) R.string.log_out else R.string.log_in)
-    }
-
-    private fun refreshMode() {
-        val profile = modeProfile.isChecked
-        username.visibility = if (profile) View.VISIBLE else View.GONE
-        optUnsave.visibility = if (profile) View.GONE else View.VISIBLE
-    }
-
-    /** Accepts a profile link shared from the Instagram app. */
     private fun handleShare(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND) return
-        val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
-        parseUsername(text)?.let {
-            modeProfile.isChecked = true
-            username.setText(it)
+        intent.getStringExtra(Intent.EXTRA_TEXT)?.let { parseUsername(it) }?.let { sharedUsername.value = it }
+    }
+}
+
+fun parseUsername(raw: String): String? {
+    val s = raw.trim()
+    Regex("instagram\\.com/([A-Za-z0-9._]+)").find(s)?.let { m ->
+        val u = m.groupValues[1]
+        if (u !in setOf("p", "reel", "reels", "stories", "explore", "accounts")) return u
+    }
+    val plain = s.removePrefix("@")
+    return if (Regex("^[A-Za-z0-9._]{1,30}$").matches(plain)) plain else null
+}
+
+@Composable
+private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, loginTick: Int) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val job by JobBus.state.collectAsState()
+
+    var loggedIn by remember { mutableStateOf(Session.isLoggedIn()) }
+    LaunchedEffect(loginTick) { loggedIn = Session.isLoggedIn() }
+
+    var savedMode by rememberSaveable { mutableStateOf(false) }
+    var username by rememberSaveable { mutableStateOf("") }
+    var usernameError by remember { mutableStateOf(false) }
+    var comments by rememberSaveable { mutableStateOf(false) }
+    var replies by rememberSaveable { mutableStateOf(false) }
+    var unsave by rememberSaveable { mutableStateOf(false) }
+    var redownload by rememberSaveable { mutableStateOf(false) }
+    var confirmLogout by remember { mutableStateOf(false) }
+
+    LaunchedEffect(sharedUsername) {
+        if (sharedUsername != null) {
+            savedMode = false
+            username = sharedUsername
+            onSharedConsumed()
         }
     }
 
-    private fun parseUsername(raw: String): String? {
-        val s = raw.trim()
-        Regex("instagram\\.com/([A-Za-z0-9._]+)").find(s)?.let { m ->
-            val u = m.groupValues[1]
-            if (u !in setOf("p", "reel", "reels", "stories", "explore", "accounts")) return u
-        }
-        val plain = s.removePrefix("@")
-        return if (Regex("^[A-Za-z0-9._]{1,30}$").matches(plain)) plain else null
+    val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
-    private fun start() {
-        if (!Session.isLoggedIn()) {
-            Toast.makeText(this, "Log in to Instagram first.", Toast.LENGTH_SHORT).show()
+    fun start() {
+        keyboard?.hide()
+        if (!loggedIn) {
+            scope.launch { snackbar.showSnackbar("Log in to Instagram first") }
             return
         }
-        val profile = modeProfile.isChecked
-        val user = if (profile) parseUsername(username.text.toString()) else null
-        if (profile && user == null) {
-            username.error = "Enter a username or profile link"
+        val user = if (savedMode) null else parseUsername(username)
+        if (!savedMode && user == null) {
+            usernameError = true
             return
         }
-        val i = Intent(this, ArchiveService::class.java)
-            .putExtra(ArchiveService.EXTRA_SAVED, !profile)
-            .putExtra(ArchiveService.EXTRA_USERNAME, user)
-            .putExtra(ArchiveService.EXTRA_COMMENTS, optComments.isChecked)
-            .putExtra(ArchiveService.EXTRA_REPLIES, optReplies.isChecked)
-            .putExtra(ArchiveService.EXTRA_UNSAVE, optUnsave.isChecked)
-            .putExtra(ArchiveService.EXTRA_REDOWNLOAD, optRedownload.isChecked)
-        startForegroundService(i)
+        ctx.startForegroundService(
+            Intent(ctx, ArchiveService::class.java)
+                .putExtra(ArchiveService.EXTRA_SAVED, savedMode)
+                .putExtra(ArchiveService.EXTRA_USERNAME, user)
+                .putExtra(ArchiveService.EXTRA_COMMENTS, comments)
+                .putExtra(ArchiveService.EXTRA_REPLIES, replies)
+                .putExtra(ArchiveService.EXTRA_UNSAVE, unsave)
+                .putExtra(ArchiveService.EXTRA_REDOWNLOAD, redownload),
+        )
     }
 
-    private fun askNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    Scaffold(
+        modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
+        topBar = {
+            LargeTopAppBar(
+                title = { Text("ArchivoLoco", fontWeight = FontWeight.SemiBold) },
+                scrollBehavior = scroll,
+                colors = TopAppBarDefaults.largeTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                ),
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbar) },
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 16.dp, end = 16.dp,
+                top = padding.calculateTopPadding() + 4.dp,
+                bottom = padding.calculateBottomPadding() + 24.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+            item {
+                Text(
+                    "Back up Instagram content you have access to.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
+                )
+            }
+
+            // ---- Account
+            item {
+                SectionCard {
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        leadingContent = {
+                            IconBadge(
+                                Icons.Filled.AccountCircle,
+                                if (loggedIn) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                if (loggedIn) MaterialTheme.colorScheme.onPrimaryContainer
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        headlineContent = { Text("Instagram account", fontWeight = FontWeight.Medium) },
+                        supportingContent = { Text(if (loggedIn) "Connected" else "Not connected") },
+                        trailingContent = {
+                            if (loggedIn) {
+                                TextButton(onClick = { confirmLogout = true }) { Text("Log out") }
+                            } else {
+                                FilledTonalButton(onClick = {
+                                    ctx.startActivity(Intent(ctx, LoginActivity::class.java))
+                                }) { Text("Log in") }
+                            }
+                        },
+                    )
+                }
+            }
+
+            // ---- Source
+            item {
+                SectionCard {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        SectionTitle("Archive")
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            SegmentedButton(
+                                selected = !savedMode,
+                                onClick = { savedMode = false },
+                                shape = SegmentedButtonDefaults.itemShape(0, 2),
+                                icon = { SegmentedButtonDefaults.Icon(!savedMode) { Icon(Icons.Filled.Person, null, Modifier.size(18.dp)) } },
+                            ) { Text("Profile") }
+                            SegmentedButton(
+                                selected = savedMode,
+                                onClick = { savedMode = true },
+                                shape = SegmentedButtonDefaults.itemShape(1, 2),
+                                icon = { SegmentedButtonDefaults.Icon(savedMode) { Icon(Icons.Filled.Star, null, Modifier.size(18.dp)) } },
+                            ) { Text("Saved posts") }
+                        }
+                        AnimatedContent(targetState = savedMode, label = "source") { saved ->
+                            if (!saved) {
+                                OutlinedTextField(
+                                    value = username,
+                                    onValueChange = { username = it; usernameError = false },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("Username or profile link") },
+                                    leadingIcon = { Text("@", style = MaterialTheme.typography.titleMedium) },
+                                    trailingIcon = {
+                                        if (username.isNotEmpty()) {
+                                            androidx.compose.material3.IconButton(onClick = { username = "" }) {
+                                                Icon(Icons.Filled.Close, "Clear")
+                                            }
+                                        }
+                                    },
+                                    isError = usernameError,
+                                    supportingText = {
+                                        Text(
+                                            if (usernameError) "Enter a valid username or profile link"
+                                            else "Tip: share a profile from Instagram to ArchivoLoco",
+                                        )
+                                    },
+                                    singleLine = true,
+                                    shape = MaterialTheme.shapes.small,
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Uri,
+                                        imeAction = ImeAction.Go,
+                                        autoCorrectEnabled = false,
+                                    ),
+                                    keyboardActions = KeyboardActions(onGo = { start() }),
+                                )
+                            } else {
+                                Text(
+                                    "Everything in your Saved collection, every page.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---- Options
+            item {
+                SectionCard {
+                    Column(Modifier.padding(vertical = 8.dp)) {
+                        SectionTitle("Options", Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        OptionRow("Include comments", "Saves a comments file per post", comments) {
+                            comments = it
+                            if (!it) replies = false
+                        }
+                        OptionRow("Include replies", "Much slower on busy posts", replies) {
+                            replies = it
+                            if (it) comments = true
+                        }
+                        AnimatedVisibility(savedMode, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                            OptionRow("Unsave after archiving", "Removes each post from Saved once it's backed up", unsave) { unsave = it }
+                        }
+                        OptionRow("Re-download everything", "Ignore history and fetch again", redownload) { redownload = it }
+                    }
+                }
+            }
+
+            // ---- Action
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (job.running) {
+                        OutlinedButton(
+                            onClick = { ArchiveService.stop(ctx) },
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                        ) {
+                            Icon(Icons.Filled.Close, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Stop", style = MaterialTheme.typography.titleMedium)
+                        }
+                    } else {
+                        Button(
+                            onClick = { start() },
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Start archiving", style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Filled.Info, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "Saved to Download/ArchivoLoco",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            // ---- Progress
+            if (job.title.isNotEmpty()) {
+                item { ProgressCard(job) }
+            }
+
+            // ---- Activity log
+            item {
+                SectionTitle("Activity", Modifier.padding(start = 4.dp, top = 8.dp))
+            }
+            if (job.lines.isEmpty()) {
+                item {
+                    Text(
+                        "Nothing yet. Progress appears here once you start.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
+            } else {
+                item {
+                    SectionCard(color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            job.lines.takeLast(150).asReversed().forEach { line ->
+                                Text(
+                                    line,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
+
+    if (confirmLogout) {
+        AlertDialog(
+            onDismissRequest = { confirmLogout = false },
+            icon = { Icon(Icons.Filled.AccountCircle, null) },
+            title = { Text("Log out?") },
+            text = { Text("ArchivoLoco will forget your Instagram session. Your archived files stay on the phone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmLogout = false
+                    Session.logOut { loggedIn = false }
+                }) { Text("Log out") }
+            },
+            dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun ProgressCard(job: JobState) {
+    val s = job.stats
+    SectionCard(color = MaterialTheme.colorScheme.secondaryContainer) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    job.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    if (job.running) "Running" else "Finished",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            if (job.running) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            Row(Modifier.fillMaxWidth()) {
+                Stat("Posts", s.posts, Modifier.weight(1f))
+                Stat("Images", s.images, Modifier.weight(1f))
+                Stat("Videos", s.videos, Modifier.weight(1f))
+            }
+            Row(Modifier.fillMaxWidth()) {
+                Stat(if (s.unsaved > 0) "Unsaved" else "Comments", if (s.unsaved > 0) s.unsaved else s.comments, Modifier.weight(1f))
+                Stat("Skipped", s.skipped, Modifier.weight(1f))
+                Stat("Failed", s.failed, Modifier.weight(1f), highlight = s.failed > 0)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Stat(label: String, value: Int, modifier: Modifier, highlight: Boolean = false) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            value.toString(),
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = if (highlight) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
+        )
+    }
+}
+
+@Composable
+private fun SectionCard(
+    color: Color = MaterialTheme.colorScheme.surfaceContainerLow,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = color),
+    ) { content() }
+}
+
+@Composable
+private fun SectionTitle(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        modifier = modifier,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.SemiBold,
+    )
+}
+
+@Composable
+private fun OptionRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    ListItem(
+        modifier = Modifier.fillMaxWidth(),
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        headlineContent = { Text(title) },
+        supportingContent = { Text(subtitle) },
+        trailingContent = { Switch(checked = checked, onCheckedChange = onChange) },
+    )
+}
+
+@Composable
+private fun IconBadge(icon: ImageVector, bg: Color, fg: Color) {
+    Box(
+        Modifier.size(44.dp).background(bg, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) { Icon(icon, null, tint = fg, modifier = Modifier.size(26.dp)) }
 }

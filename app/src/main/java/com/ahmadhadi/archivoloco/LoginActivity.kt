@@ -1,58 +1,126 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.ahmadhadi.archivoloco
 
 import android.annotation.SuppressLint
-import android.app.Activity
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 
 /**
  * The Android stand-in for "read cookies from your browser": you log in to instagram.com in a
  * WebView, and the session cookies it stores are what the archiver uses. Your password never
  * touches the app's code - it goes straight from the web page to Instagram.
  */
-class LoginActivity : Activity() {
-    private lateinit var web: WebView
-
+class LoginActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        web = WebView(this)
-        setContentView(web)
-
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
-        cm.setAcceptThirdPartyCookies(web, true)
 
-        web.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            // Same desktop UA as the API client so the session matches the client hints.
-            userAgentString = IgConstants.USER_AGENT
-            useWideViewPort = true
-            loadWithOverviewMode = true
-        }
-        web.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView, url: String) {
-                if (Session.isLoggedIn()) {
-                    cm.flush()
-                    setResult(RESULT_OK)
-                    finish()
+        setContent {
+            ArchivoTheme {
+                var loading by remember { mutableStateOf(true) }
+                var web by remember { mutableStateOf<WebView?>(null) }
+                var canGoBack by remember { mutableStateOf(false) }
+
+                BackHandler(enabled = canGoBack) { web?.goBack() }
+
+                Scaffold(
+                    topBar = {
+                        Column {
+                            TopAppBar(
+                                navigationIcon = {
+                                    IconButton(onClick = { finish() }) {
+                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                                    }
+                                },
+                                title = {
+                                    Column {
+                                        Text("Log in to Instagram", style = MaterialTheme.typography.titleMedium)
+                                        Text(
+                                            "Your password goes only to instagram.com",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                actions = {
+                                    Icon(
+                                        Icons.Filled.Lock, null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(end = 16.dp),
+                                    )
+                                },
+                            )
+                            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                    },
+                ) { padding ->
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize().padding(padding),
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                cm.setAcceptThirdPartyCookies(this, true)
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                // Same desktop UA as the API client so the session matches the client hints.
+                                settings.userAgentString = IgConstants.USER_AGENT
+                                settings.useWideViewPort = true
+                                settings.loadWithOverviewMode = true
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                                        loading = true
+                                    }
+
+                                    override fun onPageFinished(view: WebView, url: String) {
+                                        loading = false
+                                        canGoBack = view.canGoBack()
+                                        if (Session.isLoggedIn()) {
+                                            cm.flush()
+                                            setResult(RESULT_OK)
+                                            finish()
+                                        }
+                                    }
+                                }
+                                loadUrl("${IgConstants.BASE}/accounts/login/")
+                                web = this
+                            }
+                        },
+                    )
                 }
             }
         }
-        web.loadUrl("${IgConstants.BASE}/accounts/login/")
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else super.onBackPressed()
-    }
-
-    override fun onDestroy() {
-        web.destroy()
-        super.onDestroy()
     }
 }
 
