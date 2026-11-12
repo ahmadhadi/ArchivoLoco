@@ -82,13 +82,16 @@ class IgClient {
             ?.firstOrNull { it.startsWith("csrftoken=") }
             ?.substringAfter("=")
 
-    private suspend fun execute(client: OkHttpClient, request: Request): Response =
-        withContext(Dispatchers.IO) { client.newCall(request).execute() }
+    /**
+     * Runs a request and reads its response entirely on the IO dispatcher. Reading a response body
+     * is network I/O too, so it must never happen on the main thread.
+     */
+    private suspend fun <T> call(client: OkHttpClient, request: Request, read: (Response) -> T): T =
+        withContext(Dispatchers.IO) { client.newCall(request).execute().use(read) }
 
     private fun checkRedirect(r: Response) {
         if (r.code in 300..399) {
             val loc = r.header("location").orEmpty()
-            r.close()
             if ("login" in loc || "challenge" in loc) throw SessionExpiredException()
             throw IgException("Unexpected redirect to $loc")
         }
@@ -98,7 +101,7 @@ class IgClient {
         val b = Request.Builder().url(url)
         IgConstants.PAGE_FETCH_HEADERS.forEach { (k, v) -> b.header(k, v) }
         // Follow redirects for pages; we only want the cookies primed.
-        execute(base, b.build()).close()
+        call(base, b.build()) { }
     }
 
     suspend fun getJson(
@@ -112,40 +115,39 @@ class IgClient {
         val b = Request.Builder().url(u)
         IgConstants.API_HEADERS.forEach { (k, v) -> b.header(k, v) }
         headers.forEach { (k, v) -> b.header(k, v) }
-        val r = execute(api, b.build())
-        checkRedirect(r)
-        r.use {
-            val body = it.body?.string().orEmpty()
-            if (!it.isSuccessful) throw IgException("HTTP ${it.code} for ${u.encodedPath}")
-            if (body.trimStart().startsWith("<")) {
-                throw IgException("Got HTML instead of JSON for ${u.encodedPath} (blocked or logged out)")
-            }
-            return JSONObject(body)
+        val body = call(api, b.build()) { r ->
+            checkRedirect(r)
+            val text = r.body?.string().orEmpty()
+            if (!r.isSuccessful) throw IgException("HTTP ${r.code} for ${u.encodedPath}")
+            text
         }
+        if (body.trimStart().startsWith("<")) {
+            throw IgException("Got HTML instead of JSON for ${u.encodedPath} (blocked or logged out)")
+        }
+        return JSONObject(body)
     }
 
-    suspend fun post(url: String, form: Map<String, String> = emptyMap()): Response {
+    private fun postRequest(url: String, form: Map<String, String>): Request {
         val fb = FormBody.Builder().apply { form.forEach { (k, v) -> add(k, v) } }.build()
         val b = Request.Builder().url(url).post(fb)
         IgConstants.API_HEADERS.forEach { (k, v) -> b.header(k, v) }
-        return execute(api, b.build())
+        return b.build()
     }
 
     /** Port of InstagramClient.graphql_query. Returns the `data` object or null. */
     suspend fun graphql(variables: JSONObject, docId: String): JSONObject? {
-        val r = post(
+        val req = postRequest(
             "${IgConstants.BASE}/graphql/query",
             mapOf("doc_id" to docId, "variables" to variables.toString()),
         )
-        checkRedirect(r)
-        r.use {
-            if (!it.isSuccessful) return null
-            val text = it.body?.string().orEmpty()
-            if (text.trimStart().startsWith("<")) return null
-            val json = JSONObject(text)
-            if (json.optString("status") != "ok") return null
-            return json.optJSONObject("data")
-        }
+        val text = call(api, req) { r ->
+            checkRedirect(r)
+            if (r.isSuccessful) r.body?.string() else null
+        } ?: return null
+        if (text.trimStart().startsWith("<")) return null
+        val json = JSONObject(text)
+        if (json.optString("status") != "ok") return null
+        return json.optJSONObject("data")
     }
 
     // ---- Endpoint helpers --------------------------------------------------------------------
@@ -288,5 +290,5 @@ class IgClient {
         )
 
     suspend fun unsave(mediaPk: String): Boolean =
-        post("${IgConstants.BASE}/web/save/$mediaPk/unsave/").use { it.isSuccessful }
+        call(api, postRequest("${IgConstants.BASE}/web/save/$mediaPk/unsave/", emptyMap())) { it.isSuccessful }
 }

@@ -67,7 +67,8 @@ class ArchiveService : Service() {
                 if (s.running) notify(buildNotification(title, s.stats.summary(), ongoing = true))
             }
         }
-        job = scope.launch {
+        // The whole job runs off the main thread (network, files, database).
+        job = scope.launch(Dispatchers.IO) {
             var outcome: String
             try {
                 val archiver = Archiver(applicationContext, opts)
