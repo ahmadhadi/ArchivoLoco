@@ -41,12 +41,14 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -163,6 +165,36 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
     var redownload by rememberSaveable { mutableStateOf(false) }
     var confirmLogout by remember { mutableStateOf(false) }
 
+    // ---- Updates
+    val currentVersion = remember { UpdateChecker.currentVersion(ctx) }
+    var update by remember { mutableStateOf<UpdateInfo?>(null) }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var autoUpdate by remember { mutableStateOf(UpdateChecker.isAutoEnabled(ctx)) }
+
+    fun checkForUpdate(manual: Boolean) {
+        if (checkingUpdate) return
+        checkingUpdate = true
+        scope.launch {
+            try {
+                update = UpdateChecker.check(ctx)
+                if (manual && update == null) snackbar.showSnackbar("You're on the latest version ($currentVersion)")
+            } catch (e: Exception) {
+                if (manual) snackbar.showSnackbar("Couldn't check for updates: ${e.message}")
+            } finally {
+                checkingUpdate = false
+            }
+        }
+    }
+    LaunchedEffect(Unit) { if (UpdateChecker.isAutoCheckDue(ctx)) checkForUpdate(manual = false) }
+
+    fun openUrl(url: String) {
+        runCatching {
+            ctx.startActivity(
+                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE),
+            )
+        }
+    }
+
     LaunchedEffect(sharedUsername) {
         if (sharedUsername != null) {
             savedMode = false
@@ -230,6 +262,53 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
                 )
+            }
+
+            // ---- Update available
+            update?.let { u ->
+                item {
+                    SectionCard(color = MaterialTheme.colorScheme.tertiaryContainer) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconBadge(
+                                    Icons.Filled.Refresh,
+                                    MaterialTheme.colorScheme.tertiary,
+                                    MaterialTheme.colorScheme.onTertiary,
+                                )
+                                Spacer(Modifier.width(14.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "Update available",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    )
+                                    Text(
+                                        "Version ${u.version} · you have $currentVersion",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    )
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { openUrl(u.apkUrl) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.tertiary,
+                                        contentColor = MaterialTheme.colorScheme.onTertiary,
+                                    ),
+                                ) { Text("Download") }
+                                TextButton(onClick = { openUrl(u.pageUrl) }) {
+                                    Text("What's new", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                                }
+                                Spacer(Modifier.weight(1f))
+                                TextButton(onClick = { update = null }) {
+                                    Text("Later", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // ---- Account
@@ -414,6 +493,33 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
+                        }
+                    }
+                }
+            }
+
+            // ---- About & updates
+            item {
+                SectionCard {
+                    Column(Modifier.padding(vertical = 8.dp)) {
+                        SectionTitle("App", Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text("Version $currentVersion") },
+                            supportingContent = {
+                                Text(if (update != null) "Version ${update!!.version} is available" else "Updates come from GitHub Releases")
+                            },
+                            trailingContent = {
+                                if (checkingUpdate) {
+                                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.5.dp)
+                                } else {
+                                    FilledTonalButton(onClick = { checkForUpdate(manual = true) }) { Text("Check") }
+                                }
+                            },
+                        )
+                        OptionRow("Check for updates automatically", "Once a day when you open the app", autoUpdate) {
+                            autoUpdate = it
+                            UpdateChecker.setAutoEnabled(ctx, it)
                         }
                     }
                 }
