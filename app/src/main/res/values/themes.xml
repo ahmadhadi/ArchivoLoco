@@ -1,0 +1,13 @@
+<resources>
+    <color name="accent">#E1306C</color>
+    <color name="accent_dark">#833AB4</color>
+    <color name="bg">#FFF8FA</color>
+    <color name="ic_bg">#1B1026</color>
+
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.DarkActionBar">
+        <item name="android:colorPrimary">@color/accent_dark</item>
+        <item name="android:colorPrimaryDark">@color/accent_dark</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:windowBackground">@color/bg</item>
+    </style>
+</resources>

@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">ArchivoLoco</string>
+    <string name="login_title">Log in to Instagram</string>
+    <string name="tagline">Save Instagram content you have access to.</string>
+    <string name="not_logged_in">Not logged in</string>
+    <string name="logged_in_as">Logged in (session active)</string>
+    <string name="log_in">Log in</string>
+    <string name="log_out">Log out</string>
+    <string name="mode_profile">Profile</string>
+    <string name="mode_saved">My saved posts</string>
+    <string name="username_hint">Username or profile link</string>
+    <string name="include_comments">Include comments</string>
+    <string name="include_replies">Include reply comments (slow)</string>
+    <string name="unsave_after">Unsave posts after archiving</string>
+    <string name="redownload">Re-download everything (ignore history)</string>
+    <string name="start">Start archiving</string>
+    <string name="stop">Stop</string>
+    <string name="output_note">Files are saved to Download/ArchivoLoco/</string>
+    <string name="channel_name">Archiving</string>
+</resources>

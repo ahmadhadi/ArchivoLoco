@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original mark: an archive box with a tilted, "loco" download arrow. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- box body -->
+    <path
+        android:fillColor="#E1306C"
+        android:pathData="M32,52 L76,52 L76,78 Q76,82 72,82 L36,82 Q32,82 32,78 Z" />
+    <!-- box lid -->
+    <path
+        android:fillColor="#F77737"
+        android:pathData="M29,44 L79,44 Q81,44 81,46 L81,50 Q81,52 79,52 L29,52 Q27,52 27,50 L27,46 Q27,44 29,44 Z" />
+    <!-- slot -->
+    <path
+        android:fillColor="#1B1026"
+        android:pathData="M46,60 L62,60 Q64,60 64,62 Q64,64 62,64 L46,64 Q44,64 44,62 Q44,60 46,60 Z" />
+    <!-- tilted arrow -->
+    <group android:rotation="-14" android:pivotX="54" android:pivotY="34">
+        <path
+            android:fillColor="#FCAF45"
+            android:pathData="M50,20 L58,20 L58,32 L64,32 L54,42 L44,32 L50,32 Z" />
+    </group>
+</vector>
