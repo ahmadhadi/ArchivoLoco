@@ -38,14 +38,14 @@ A history database keeps re-runs incremental — only new posts are downloaded.
 | Python tool | ArchivoLoco |
 |---|---|
 | Reads cookies from your desktop browser | You log in once in an in-app Instagram web page; its session cookies are reused. The app never sees your password. |
-| niquests + producer/consumer queues | OkHttp + coroutines, strictly one request at a time with a short pause between posts |
+| niquests impersonating desktop Chrome | Instagram API calls are made by a hidden WebView on instagram.com (same browser and session you logged in with); media files via OkHttp from Meta's CDN with no cookies. One request at a time, short pause between posts |
 | yt-dlp for videos | Downloads the highest-resolution entry from `video_versions` directly |
 | `.log.db` SQLite dedup | SQLite dedup log per output folder |
 | Rich progress display | Live log + foreground notification with a Stop button |
 
-It sends the same desktop Chrome user agent and `Sec-CH-UA` client hints as the original — Instagram's
-edge rejects API calls when they disagree. If Instagram changes its GraphQL `doc_id`s or headers,
-update `Constants.kt` (follow upstream's `constants.py` / `client.py`).
+Instagram rejects requests whose browser signals don't agree, so ArchivoLoco doesn't fake a browser:
+API calls run inside a real (hidden) WebView with no JavaScript bridge. If Instagram changes its
+GraphQL `doc_id`s, update `Constants.kt` (follow upstream's `constants.py`).
 
 ## Build locally
 
@@ -79,6 +79,8 @@ plus `ARCHIVOLOCO_KEYSTORE_PASSWORD`.
 - **No background activity on its own.** Work runs only after you tap Start, shows a notification with
   Stop, ends when the job finishes, and stops if you swipe the app away. No boot receivers, alarms,
   scheduled jobs or auto-restart.
+- **Hidden browser for API calls** exists only while a job runs and is destroyed afterwards. It has no
+  JavaScript bridge (the page can't call into the app), no file access, and can't leave instagram.com.
 - **Login page is locked down:** no file access, no third-party cookies, and links outside
   Instagram/Facebook open in your normal browser.
 - **Nothing leaves the phone in backups:** cloud backup and device-to-device transfer are disabled.

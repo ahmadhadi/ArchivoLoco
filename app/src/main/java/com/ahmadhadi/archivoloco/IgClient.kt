@@ -1,16 +1,10 @@
 package com.ahmadhadi.archivoloco
 
+import android.content.Context
 import android.webkit.CookieManager
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import okhttp3.Cookie
-import okhttp3.CookieJar
-import okhttp3.FormBody
-import okhttp3.HttpUrl
+import android.webkit.WebSettings
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -18,63 +12,29 @@ import java.util.concurrent.TimeUnit
 
 class IgException(message: String) : IOException(message)
 class SessionExpiredException :
-    IOException("Instagram redirected to login. Your session has expired - log in again.")
+    IOException("Instagram says you're not logged in. Log out and log in again in ArchivoLoco.")
 
 /**
- * Bridges the WebView's cookie store (where the login happened) into OkHttp, and writes any
- * cookies Instagram rotates (e.g. csrftoken) back so the WebView and the client stay in sync.
+ * Port of instagram_archiver.client.InstagramClient.
+ *
+ * Instagram API calls go through [WebBridge] (a real browser on www.instagram.com, same session you
+ * logged in with). Media bytes come from Meta's CDNs through [cdn], a plain HTTP client that sends
+ * no cookies and can only reach the CDN/Instagram allowlist.
  */
-private class WebViewCookieJar : CookieJar {
-    private val cm = CookieManager.getInstance()
+class IgClient(context: Context, private val bridge: WebBridge) {
 
-    override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        if (!HostPolicy.isInstagram(url.host)) return emptyList()
-        val raw = cm.getCookie(url.toString()) ?: return emptyList()
-        return raw.split(";").mapNotNull { part ->
-            val i = part.indexOf('=')
-            if (i <= 0) return@mapNotNull null
-            Cookie.Builder()
-                .name(part.substring(0, i).trim())
-                .value(part.substring(i + 1).trim())
-                .domain(url.host)
-                .build()
-        }
-    }
-
-    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        if (!HostPolicy.isInstagram(url.host)) return
-        cookies.forEach { cm.setCookie("https://www.instagram.com", it.toString()) }
-        cm.flush()
-    }
-}
-
-/** Port of instagram_archiver.client.InstagramClient (HTTP layer only). */
-class IgClient {
-    private val base = OkHttpClient.Builder()
-        .cookieJar(WebViewCookieJar())
+    val cdn: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
-        // Only Instagram + Meta CDNs over HTTPS, checked on every hop including redirects.
-        .addNetworkInterceptor(HostPolicy.enforce)
         .addInterceptor { chain ->
-            val req = chain.request()
-            val b = req.newBuilder().header("user-agent", IgConstants.USER_AGENT)
-            if (HostPolicy.isInstagram(req.url.host)) {
-                IgConstants.SHARED_HEADERS.forEach { (k, v) ->
-                    if (req.header(k) == null) b.header(k, v)
-                }
-                csrfToken()?.let { b.header("x-csrftoken", it) }
-            }
-            chain.proceed(b.build())
+            chain.proceed(chain.request().newBuilder().header("user-agent", userAgent).build())
         }
+        .addNetworkInterceptor(HostPolicy.enforce)
         .build()
 
-    /** API client: redirects are a sign of an expired session, so surface them. */
-    private val api = base.newBuilder().followRedirects(false).followSslRedirects(false).build()
-
-    /** CDN client for media bytes. */
-    val cdn: OkHttpClient = base
+    private val userAgent: String =
+        runCatching { WebSettings.getDefaultUserAgent(context) }.getOrDefault("Mozilla/5.0 (Linux; Android)")
 
     fun csrfToken(): String? =
         CookieManager.getInstance().getCookie(IgConstants.BASE)
@@ -82,78 +42,63 @@ class IgClient {
             ?.firstOrNull { it.startsWith("csrftoken=") }
             ?.substringAfter("=")
 
-    /**
-     * Runs a request and reads its response entirely on the IO dispatcher. Reading a response body
-     * is network I/O too, so it must never happen on the main thread.
-     */
-    private suspend fun <T> call(client: OkHttpClient, request: Request, read: (Response) -> T): T =
-        withContext(Dispatchers.IO) { client.newCall(request).execute().use(read) }
+    /** Turns any instagram.com URL into a same-origin path on www.instagram.com. */
+    private fun pathOf(url: String, params: Map<String, String> = emptyMap()): String {
+        val u = url.toHttpUrl().newBuilder().apply {
+            params.forEach { (k, v) -> addQueryParameter(k, v) }
+        }.build()
+        require(HostPolicy.isInstagram(u.host)) { "Not an Instagram URL" }
+        return u.encodedPath + (u.encodedQuery?.let { "?$it" } ?: "")
+    }
 
-    private fun checkRedirect(r: Response) {
-        if (r.code in 300..399) {
-            val loc = r.header("location").orEmpty()
-            if ("login" in loc || "challenge" in loc) throw SessionExpiredException()
-            val path = runCatching { loc.toHttpUrl().encodedPath }.getOrDefault(loc)
-            if (path == "/" || path.isEmpty()) {
-                // Instagram bounces API calls to its homepage when it won't serve them.
-                throw IgException(
-                    "Instagram refused the request (session not accepted, or the profile doesn't exist). " +
-                        "Try logging out and in again.",
-                )
-            }
-            throw IgException("Unexpected redirect to $loc")
+    private fun snippet(body: String): String {
+        val t = body.trim().replace(Regex("\\s+"), " ")
+        if (t.isEmpty()) return ""
+        if (t.startsWith("<")) return " (Instagram sent a web page instead of data)"
+        return " - Instagram said: " + t.take(160)
+    }
+
+    private fun check(r: BridgeResponse, path: String) {
+        when {
+            r.status == 302 -> throw IgException(
+                "Instagram refused the request (redirected). Log out and in again, then retry.",
+            )
+            r.status == -1 -> throw IgException("Network error: ${r.body}")
+            r.status == 401 || "login_required" in r.body -> throw SessionExpiredException()
+            r.status !in 200..299 -> throw IgException(
+                "HTTP ${r.status} for ${path.substringBefore('?')}${snippet(r.body)}",
+            )
         }
     }
 
-    suspend fun getPage(url: String) {
-        val b = Request.Builder().url(url)
-        IgConstants.PAGE_FETCH_HEADERS.forEach { (k, v) -> b.header(k, v) }
-        // Follow redirects for pages; we only want the cookies primed.
-        call(base, b.build()) { }
-    }
+    /** Kept for parity with the Python flow; opening the bridge loads the Instagram origin. */
+    suspend fun getPage(@Suppress("UNUSED_PARAMETER") url: String) = bridge.open()
 
     suspend fun getJson(
         url: String,
         params: Map<String, String> = emptyMap(),
         headers: Map<String, String> = emptyMap(),
     ): JSONObject {
-        val u = url.toHttpUrl().newBuilder().apply {
-            params.forEach { (k, v) -> addQueryParameter(k, v) }
-        }.build()
-        val b = Request.Builder().url(u)
-        IgConstants.API_HEADERS.forEach { (k, v) -> b.header(k, v) }
-        headers.forEach { (k, v) -> b.header(k, v) }
-        val body = call(api, b.build()) { r ->
-            checkRedirect(r)
-            val text = r.body?.string().orEmpty()
-            if (!r.isSuccessful) throw IgException("HTTP ${r.code} for ${u.encodedPath}")
-            text
+        val path = pathOf(url, params)
+        val referrer = headers["referer"] ?: "${IgConstants.BASE}/"
+        val r = bridge.fetch("GET", path, referrer = referrer, headers = headers - "referer")
+        check(r, path)
+        if (r.body.trimStart().startsWith("<")) {
+            throw IgException("Got a web page instead of data for ${path.substringBefore('?')} (blocked or logged out)")
         }
-        if (body.trimStart().startsWith("<")) {
-            throw IgException("Got HTML instead of JSON for ${u.encodedPath} (blocked or logged out)")
-        }
-        return JSONObject(body)
-    }
-
-    private fun postRequest(url: String, form: Map<String, String>): Request {
-        val fb = FormBody.Builder().apply { form.forEach { (k, v) -> add(k, v) } }.build()
-        val b = Request.Builder().url(url).post(fb)
-        IgConstants.API_HEADERS.forEach { (k, v) -> b.header(k, v) }
-        return b.build()
+        return JSONObject(r.body)
     }
 
     /** Port of InstagramClient.graphql_query. Returns the `data` object or null. */
-    suspend fun graphql(variables: JSONObject, docId: String): JSONObject? {
-        val req = postRequest(
-            "${IgConstants.BASE}/graphql/query",
-            mapOf("doc_id" to docId, "variables" to variables.toString()),
+    suspend fun graphql(variables: JSONObject, docId: String, referrer: String = "${IgConstants.BASE}/"): JSONObject? {
+        val r = bridge.fetch(
+            "POST", "/graphql/query",
+            form = mapOf("doc_id" to docId, "variables" to variables.toString()),
+            referrer = referrer,
         )
-        val text = call(api, req) { r ->
-            checkRedirect(r)
-            if (r.isSuccessful) r.body?.string() else null
-        } ?: return null
-        if (text.trimStart().startsWith("<")) return null
-        val json = JSONObject(text)
+        if (r.status == 302) check(r, "/graphql/query")
+        if (r.status !in 200..299 || r.body.trimStart().startsWith("<")) return null
+        val json = JSONObject(r.body)
         if (json.optString("status") != "ok") return null
         return json.optJSONObject("data")
     }
@@ -162,12 +107,12 @@ class IgClient {
 
     suspend fun webProfileInfo(username: String): JSONObject? =
         getJson(
-            "https://i.instagram.com/api/v1/users/web_profile_info/",
+            "${IgConstants.BASE}/api/v1/users/web_profile_info/",
             mapOf("username" to username),
         ).optJSONObject("data")?.optJSONObject("user")
 
     suspend fun highlightIds(userId: String): List<String> {
-        val tray = getJson("https://i.instagram.com/api/v1/highlights/$userId/highlights_tray/")
+        val tray = getJson("${IgConstants.BASE}/api/v1/highlights/$userId/highlights_tray/")
             .optJSONArray("tray") ?: return emptyList()
         return (0 until tray.length()).map { tray.getJSONObject(it).getString("id").substringAfterLast(':') }
     }
@@ -220,7 +165,7 @@ class IgClient {
             vars.put("after", after).put("before", JSONObject.NULL)
                 .put("first", 12).put("last", JSONObject.NULL)
         }
-        return graphql(vars, IgConstants.TIMELINE_DOC_ID)
+        return graphql(vars, IgConstants.TIMELINE_DOC_ID, referrer = "${IgConstants.BASE}/$username/")
             ?.optJSONObject("xdt_api__v1__feed__user_timeline_graphql_connection")
     }
 
@@ -298,5 +243,5 @@ class IgClient {
         )
 
     suspend fun unsave(mediaPk: String): Boolean =
-        call(api, postRequest("${IgConstants.BASE}/web/save/$mediaPk/unsave/", emptyMap())) { it.isSuccessful }
+        bridge.fetch("POST", "/web/save/$mediaPk/unsave/", form = emptyMap()).status in 200..299
 }

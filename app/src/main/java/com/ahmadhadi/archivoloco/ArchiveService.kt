@@ -13,10 +13,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class ArchiveService : Service() {
     companion object {
@@ -72,7 +74,11 @@ class ArchiveService : Service() {
             var outcome: String
             try {
                 val archiver = Archiver(applicationContext, opts)
-                if (saved) archiver.archiveSaved() else archiver.archiveProfile(username)
+                try {
+                    if (saved) archiver.archiveSaved() else archiver.archiveProfile(username)
+                } finally {
+                    withContext(NonCancellable) { archiver.close() }
+                }
                 outcome = "Done"
             } catch (e: CancellationException) {
                 outcome = "Stopped"

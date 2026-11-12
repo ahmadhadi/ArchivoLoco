@@ -26,7 +26,11 @@ data class ArchiveOptions(
  * what the original relies on to stay under Instagram's rate limits.
  */
 class Archiver(private val context: Context, private val opts: ArchiveOptions) {
-    private val client = IgClient()
+    private val bridge = WebBridge(context)
+    private val client = IgClient(context, bridge)
+
+    /** Releases the hidden browser. Always called when a job ends. */
+    suspend fun close() = bridge.close()
     private val failedUrls = mutableListOf<String>()
     private lateinit var out: OutputDir
     private lateinit var dedup: DedupLog
@@ -60,10 +64,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
         } catch (e: IgException) {
             // Instagram answers 404 when no account has this exact username.
             if (e.message.orEmpty().startsWith("HTTP 404")) {
-                throw IgException(
-                    "No Instagram account named @$username. Check the exact handle - easiest is " +
-                        "Instagram → profile → ⋯ → Share → ArchivoLoco.",
-                )
+                throw IgException("Instagram couldn't find @$username. ${e.message}")
             }
             log("⚠ Could not get profile info: ${e.message}")
             null

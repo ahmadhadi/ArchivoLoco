@@ -120,8 +120,7 @@ class LoginActivity : ComponentActivity() {
                             WebView(ctx).apply {
                                 settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
-                                // Same desktop UA as the API client so the session matches the client hints.
-                                settings.userAgentString = IgConstants.USER_AGENT
+                                // Default WebView identity: the archiver's hidden browser uses the same one.
                                 settings.useWideViewPort = true
                                 settings.loadWithOverviewMode = true
                                 // Hardening: no local file/content access, no third-party cookies.
