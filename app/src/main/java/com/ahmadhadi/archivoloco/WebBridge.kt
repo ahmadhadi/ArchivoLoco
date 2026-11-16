@@ -39,6 +39,8 @@ class WebBridge(private val context: Context) {
         w.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            // Same identity as the login screen, so Instagram sees one consistent browser.
+            userAgentString = BrowserIdentity.userAgent(context)
             allowFileAccess = false
             allowContentAccess = false
             blockNetworkImage = true
