@@ -7,6 +7,10 @@ import android.os.Bundle
 import android.text.format.DateUtils
 import android.widget.VideoView
 import android.widget.Toast
+import androidx.compose.foundation.border
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
@@ -125,7 +129,7 @@ private sealed interface Screen {
     data object Home : Screen
     data class Profile(val folder: String) : Screen
     data class Feed(val folder: String, val index: Int, val reels: Boolean = false) : Screen
-    data class Gallery(val folder: String, val title: String, val index: Int) : Screen
+    data class Gallery(val folder: String, val key: String) : Screen
 }
 
 @Composable
@@ -158,7 +162,7 @@ private fun LibraryApp(startFolder: String?, onExit: () -> Unit) {
             title = s.folder,
             onBack = ::pop,
             onOpenPost = { index, reels -> push(Screen.Feed(s.folder, index, reels)) },
-            onOpenGallery = { title -> push(Screen.Gallery(s.folder, title, 0)) },
+            onOpenGallery = { key -> push(Screen.Gallery(s.folder, key)) },
             onRefresh = { reloadKey++ },
             onDeleted = {
                 profile = null
@@ -169,8 +173,9 @@ private fun LibraryApp(startFolder: String?, onExit: () -> Unit) {
             FeedScreen(it, if (s.reels) it.posts.filter { p -> p.isReel } else it.posts, s.index, onBack = ::pop)
         }
         is Screen.Gallery -> profile?.takeIf { it.folder == s.folder }?.let { p ->
-            val media = if (s.title == "Stories") p.stories else p.highlights
-            GalleryScreen(s.title, media, onBack = ::pop)
+            val group = if (s.key == STORY_KEY) StoryGroup(STORY_KEY, "Story", p.stories)
+            else p.highlights.firstOrNull { it.key == s.key }
+            group?.let { GalleryScreen(p, it, onBack = ::pop) }
         }
     }
 }
@@ -455,11 +460,21 @@ private fun ProfileHeader(p: ArchivedProfile, onOpenGallery: (String) -> Unit, o
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (p.stories.isNotEmpty() || p.highlights.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (p.stories.isNotEmpty()) AssistChip(onClick = { onOpenGallery("Stories") }, label = { Text("Stories · ${p.stories.size}") })
-                if (p.highlights.isNotEmpty()) AssistChip(onClick = { onOpenGallery("Highlights") }, label = { Text("Highlights · ${p.highlights.size}") })
+        // Story + highlights row, like Instagram's circles under the bio.
+        val circles = buildList {
+            if (p.stories.isNotEmpty()) add(StoryGroup(STORY_KEY, "Story", p.stories))
+            addAll(p.highlights)
+        }
+        if (circles.isNotEmpty()) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 4.dp)) {
+                items(circles, key = { it.key }) { g -> HighlightCircle(g) { onOpenGallery(g.key) } }
             }
+        } else {
+            Text(
+                "No stories or highlights archived. They need a login - archive this profile again while logged in.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -724,22 +739,79 @@ private fun CommentRow(c: Comment, indent: Int) {
 // ------------------------------------------------------------------ Stories / highlights
 
 @Composable
-private fun GalleryScreen(title: String, media: List<Media>, onBack: () -> Unit) {
+private fun HighlightCircle(g: StoryGroup, onClick: () -> Unit) {
+    val ring = if (g.key == STORY_KEY) {
+        Brush.linearGradient(listOf(Color(0xFFFEDA75), Color(0xFFFA7E1E), Color(0xFFD62976), Color(0xFF962FBF)))
+    } else {
+        SolidColor(MaterialTheme.colorScheme.outlineVariant)
+    }
+    Column(
+        Modifier.width(72.dp).clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier.size(68.dp).border(2.dp, ring, CircleShape).padding(4.dp).clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        ) {
+            g.cover?.let {
+                AsyncImage(model = it.uri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(g.title, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            "${g.media.size}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** Instagram-style story player: progress segments, tap left/right to step, swipe, close. */
+@Composable
+private fun GalleryScreen(p: ArchivedProfile, group: StoryGroup, onBack: () -> Unit) {
+    val media = group.media
     val pager = rememberPagerState(pageCount = { media.size })
+    val scope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
             MediaView(media[page], active = pager.currentPage == page, fit = ContentScale.Fit)
         }
-        Row(
-            Modifier.fillMaxWidth().padding(top = 36.dp, start = 4.dp, end = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) }
-            Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            Text("${pager.currentPage + 1}/${media.size}", color = Color.White)
+        // Tap zones: left third = previous, right third = next (videos keep their own tap-to-play in the middle).
+        Row(Modifier.fillMaxSize().padding(top = 120.dp, bottom = 80.dp)) {
+            Box(Modifier.weight(1f).fillMaxSize().clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+            ) { if (pager.currentPage > 0) scope.launch { pager.animateScrollToPage(pager.currentPage - 1) } else onBack() })
+            Spacer(Modifier.weight(1f))
+            Box(Modifier.weight(1f).fillMaxSize().clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+            ) { if (pager.currentPage < media.size - 1) scope.launch { pager.animateScrollToPage(pager.currentPage + 1) } else onBack() })
+        }
+        Column(Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.25f)).padding(top = 36.dp, start = 8.dp, end = 8.dp, bottom = 6.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.fillMaxWidth()) {
+                repeat(media.size) { i ->
+                    Box(
+                        Modifier.weight(1f).height(2.5.dp).clip(CircleShape)
+                            .background(if (i <= pager.currentPage) Color.White else Color.White.copy(alpha = 0.35f)),
+                    )
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Avatar(p.picture, 32.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(p.username, color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text("  ${group.title}", color = Color.White.copy(alpha = 0.8f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f))
+                Text("${pager.currentPage + 1}/${media.size}", color = Color.White.copy(alpha = 0.8f))
+                IconButton(onClick = onBack) { Icon(Icons.Filled.Close, "Close", tint = Color.White) }
+            }
         }
     }
 }
+
+private const val STORY_KEY = "__story__"
 
 // ------------------------------------------------------------------ Shared bits
 

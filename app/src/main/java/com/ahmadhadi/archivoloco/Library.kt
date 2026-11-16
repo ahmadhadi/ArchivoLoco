@@ -18,7 +18,7 @@ import java.io.File
  * and turns them into profiles, posts and comments.
  */
 
-data class ArchivedFile(val name: String, val uri: Uri, val mime: String)
+data class ArchivedFile(val name: String, val uri: Uri, val mime: String, val modified: Long = 0)
 
 data class Media(val uri: Uri, val isVideo: Boolean, val width: Int, val height: Int)
 
@@ -56,8 +56,13 @@ data class ArchivedProfile(
     val picture: Uri?,
     val posts: List<ArchivedPost>,
     val stories: List<Media>,
-    val highlights: List<Media>,
+    val highlights: List<StoryGroup>,
 )
+
+/** One highlight (or the current story): a title, a cover and its items in order. */
+data class StoryGroup(val key: String, val title: String, val media: List<Media>) {
+    val cover: Media? get() = media.firstOrNull { !it.isVideo } ?: media.firstOrNull()
+}
 
 data class LibraryEntry(val folder: String, val picture: Uri?, val postCount: Int, val fileCount: Int)
 
@@ -78,7 +83,7 @@ object Library {
         val out = HashMap<String, MutableList<ArchivedFile>>()
         start.walkTopDown().filter { it.isFile && !it.name.startsWith(".") }.forEach { f ->
             val rel = f.parentFile!!.relativeTo(root).path.replace(File.separatorChar, '/') + "/"
-            out.getOrPut(rel) { mutableListOf() } += ArchivedFile(f.name, Uri.fromFile(f), mimeOf(f.name))
+            out.getOrPut(rel) { mutableListOf() } += ArchivedFile(f.name, Uri.fromFile(f), mimeOf(f.name), f.lastModified())
         }
         return out
     }
@@ -209,10 +214,19 @@ object Library {
             parsePost(id, info, mediaById, commentsJson)
         }.sortedByDescending { it.takenAt }
 
-        fun mediaIn(sub: String) = byPath.filterKeys { it.startsWith("$folder/$sub/") }.values.flatten()
+        fun toMedia(files: List<ArchivedFile>) = files
             .filter { it.mime.startsWith("image/") || it.mime.startsWith("video/") }
-            .sortedBy { it.name }
+            .sortedWith(compareBy({ it.modified }, { it.name }))
             .map { Media(it.uri, it.mime.startsWith("video/"), 0, 0) }
+
+        // Highlights are saved one folder per highlight ("<Title>_<id>"); older runs saved them flat.
+        val hlRoot = "$folder/highlights/"
+        val highlightGroups = byPath.filterKeys { it.startsWith(hlRoot) }.map { (rel, files) ->
+            val dir = rel.removePrefix(hlRoot).trimEnd('/')
+            val title = if (dir.isEmpty()) "Highlights"
+            else dir.substringBeforeLast('_').replace('_', ' ').trim().ifEmpty { "Highlight" }
+            StoryGroup(key = dir.ifEmpty { "_" }, title = title, media = toMedia(files))
+        }.filter { it.media.isNotEmpty() }.sortedBy { it.title.lowercase() }
 
         val p = profileJson ?: JSONObject()
         ArchivedProfile(
@@ -228,8 +242,8 @@ object Library {
             isVerified = p.optBoolean("is_verified"),
             picture = byName.values.firstOrNull { it.name.startsWith("profile_pic.") }?.uri,
             posts = posts,
-            stories = mediaIn("stories"),
-            highlights = mediaIn("highlights"),
+            stories = toMedia(byPath.filterKeys { it.startsWith("$folder/stories/") }.values.flatten()),
+            highlights = highlightGroups,
         )
     }
 
