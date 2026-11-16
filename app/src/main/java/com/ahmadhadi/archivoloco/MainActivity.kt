@@ -475,7 +475,7 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
                         Icon(Icons.Filled.Info, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            "Saved to Download/ArchivoLoco",
+                            "Saved privately in the app · open the Library to view",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

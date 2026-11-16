@@ -1,18 +1,21 @@
 package com.ahmadhadi.archivoloco
 
 import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import android.webkit.MimeTypeMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
 /*
- * Offline library: reads what the archiver saved under Download/ArchivoLoco/ (via MediaStore,
- * no network, no extra permissions) and turns it into profiles, posts and comments.
+ * Offline library: reads archives from the app's private storage (no network, no permissions)
+ * and turns them into profiles, posts and comments.
  */
 
 data class ArchivedFile(val name: String, val uri: Uri, val mime: String)
@@ -59,32 +62,129 @@ data class ArchivedProfile(
 data class LibraryEntry(val folder: String, val picture: Uri?, val postCount: Int, val fileCount: Int)
 
 object Library {
-    private val ROOT = "${Environment.DIRECTORY_DOWNLOADS}/ArchivoLoco/"
-    private val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+    private val PUBLIC_ROOT = "${Environment.DIRECTORY_DOWNLOADS}/ArchivoLoco/"
+    private val downloads = MediaStore.Downloads.EXTERNAL_CONTENT_URI
 
-    /** All files under Download/ArchivoLoco/, grouped by relative sub-path ("wasej.sa/", "wasej.sa/stories/"). */
+    private fun mimeOf(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            ?: when (ext) { "json" -> "application/json"; "heic" -> "image/heic"; else -> "application/octet-stream" }
+    }
+
+    /** All archive files in private storage, grouped by relative dir ("wasej.sa/", "wasej.sa/stories/"). */
     private fun scan(ctx: Context, folder: String? = null): Map<String, List<ArchivedFile>> {
-        val prefix = ROOT + (folder?.let { "$it/" } ?: "")
+        val root = ArchiveStore.root(ctx)
+        val start = folder?.let { ArchiveStore.dir(ctx, it) } ?: root
         val out = HashMap<String, MutableList<ArchivedFile>>()
-        ctx.contentResolver.query(
-            collection,
-            arrayOf(
-                MediaStore.MediaColumns._ID,
-                MediaStore.MediaColumns.DISPLAY_NAME,
-                MediaStore.MediaColumns.RELATIVE_PATH,
-                MediaStore.MediaColumns.MIME_TYPE,
-            ),
-            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.IS_PENDING} = 0",
-            arrayOf("$prefix%"),
+        start.walkTopDown().filter { it.isFile && !it.name.startsWith(".") }.forEach { f ->
+            val rel = f.parentFile!!.relativeTo(root).path.replace(File.separatorChar, '/') + "/"
+            out.getOrPut(rel) { mutableListOf() } += ArchivedFile(f.name, Uri.fromFile(f), mimeOf(f.name))
+        }
+        return out
+    }
+
+    suspend fun list(ctx: Context): List<LibraryEntry> = withContext(Dispatchers.IO) {
+        migrateFromDownloads(ctx)
+        val byPath = scan(ctx)
+        byPath.keys.map { it.substringBefore('/') }.distinct().filter { it.isNotEmpty() }.map { folder ->
+            val root = byPath["$folder/"].orEmpty()
+            LibraryEntry(
+                folder = folder,
+                picture = root.firstOrNull { it.name.startsWith("profile_pic.") }?.uri,
+                postCount = root.count { it.name.endsWith("-media-info-0000.json") },
+                fileCount = byPath.filterKeys { it.startsWith("$folder/") }.values.sumOf { it.size },
+            )
+        }.sortedBy { it.folder.lowercase() }
+    }
+
+    /**
+     * One-time move of archives that older versions wrote to Download/ArchivoLoco/ (visible in the
+     * gallery) into private storage. Exported logs are left where they are.
+     */
+    private fun migrateFromDownloads(ctx: Context) {
+        val prefs = ctx.getSharedPreferences("storage", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("migrated_v1", false)) return
+        val resolver = ctx.contentResolver
+        resolver.query(
+            downloads,
+            arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH),
+            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} NOT LIKE ?",
+            arrayOf("$PUBLIC_ROOT%", "${PUBLIC_ROOT}logs/%"),
             null,
         )?.use { c ->
             while (c.moveToNext()) {
-                val rel = c.getString(2).removePrefix(ROOT)
-                val uri = ContentUris.withAppendedId(collection, c.getLong(0))
-                out.getOrPut(rel) { mutableListOf() } += ArchivedFile(c.getString(1), uri, c.getString(3) ?: "")
+                val uri = ContentUris.withAppendedId(downloads, c.getLong(0))
+                val rel = c.getString(2).removePrefix(PUBLIC_ROOT).trimEnd('/')
+                if (rel.isEmpty() || rel.split('/').any { it == ".." || it.startsWith(".") }) continue
+                val dest = File(ArchiveStore.root(ctx), rel).apply { mkdirs() }.let { File(it, c.getString(1)) }
+                val ok = runCatching {
+                    if (!dest.exists()) {
+                        resolver.openInputStream(uri)?.use { input -> dest.outputStream().use { input.copyTo(it) } }
+                    }
+                    true
+                }.getOrDefault(false)
+                if (ok) runCatching { resolver.delete(uri, null, null) }
             }
         }
-        return out
+        prefs.edit().putBoolean("migrated_v1", true).apply()
+    }
+
+    /** Copies a profile's archive to Download/ArchivoLoco/<folder>/ so it shows in the gallery. Returns files copied. */
+    suspend fun exportToPhone(ctx: Context, folder: String): Int = withContext(Dispatchers.IO) {
+        val resolver = ctx.contentResolver
+        val root = ArchiveStore.root(ctx)
+        var copied = 0
+        ArchiveStore.dir(ctx, folder).walkTopDown().filter { it.isFile && !it.name.startsWith(".") }.forEach { f ->
+            val relDir = PUBLIC_ROOT + f.parentFile!!.relativeTo(root).path.replace(File.separatorChar, '/') + "/"
+            val exists = resolver.query(
+                downloads, arrayOf(MediaStore.MediaColumns._ID),
+                "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
+                arrayOf(relDir, f.name), null,
+            )?.use { it.moveToFirst() } == true
+            if (exists) return@forEach
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, f.name)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeOf(f.name))
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relDir)
+                put(MediaStore.MediaColumns.DATE_TAKEN, f.lastModified())
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(downloads, values) ?: return@forEach
+            val ok = runCatching {
+                resolver.openOutputStream(uri, "w")?.use { out -> f.inputStream().use { it.copyTo(out) } } != null
+            }.getOrDefault(false)
+            if (ok) {
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                copied++
+            } else {
+                resolver.delete(uri, null, null)
+            }
+        }
+        copied
+    }
+
+    /**
+     * Deletes a profile completely: its private archive, any copy saved to the phone with
+     * "Save to phone", and its download history (so a new archive starts fresh).
+     */
+    suspend fun delete(ctx: Context, folder: String) = withContext(Dispatchers.IO) {
+        require(folder.isNotEmpty() && !folder.contains('/') && !folder.startsWith(".")) { "Invalid folder" }
+        ArchiveStore.dir(ctx, folder).deleteRecursively()
+        runCatching {
+            ctx.contentResolver.delete(
+                downloads,
+                "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
+                arrayOf("$PUBLIC_ROOT$folder/%"),
+            )
+        }
+        DedupLog(ctx, folder, disabled = false).use { it.clear() }
+    }
+
+    /** Deletes every archived profile (logs exported to Downloads are kept). */
+    suspend fun deleteAll(ctx: Context) = withContext(Dispatchers.IO) {
+        ArchiveStore.root(ctx).listFiles()?.filter { it.isDirectory }?.forEach { delete(ctx, it.name) }
     }
 
     private fun readJson(ctx: Context, uri: Uri): JSONObject? = runCatching {

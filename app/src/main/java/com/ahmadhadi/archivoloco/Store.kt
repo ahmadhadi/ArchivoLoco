@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 
@@ -39,6 +40,11 @@ class DedupLog(context: Context, private val folder: String, private val disable
         ).use { return it.moveToFirst() }
     }
 
+    /** Forgets everything archived for this folder (used when a profile is deleted). */
+    fun clear() {
+        writableDatabase.execSQL("DELETE FROM log WHERE folder = ?", arrayOf(folder))
+    }
+
     fun save(url: String) {
         if (disabled) return
         writableDatabase.execSQL(
@@ -48,65 +54,50 @@ class DedupLog(context: Context, private val folder: String, private val disable
     }
 }
 
-/** Writes files into Download/ArchivoLoco/<folder>/ through MediaStore (no storage permission). */
+/**
+ * Where archives live: app-private storage (filesDir/archives/<folder>/). Not visible to the gallery,
+ * file managers or other apps, and removed if ArchivoLoco is uninstalled. Use "Save to phone" in
+ * the library to export a profile to Download/ArchivoLoco/.
+ */
+object ArchiveStore {
+    fun root(ctx: Context): File = File(ctx.filesDir, "archives").apply { mkdirs() }
+    fun dir(ctx: Context, folder: String): File = File(root(ctx), folder)
+}
+
+/** Writes an archive's files into private storage. */
 class OutputDir(private val context: Context, val folder: String) {
-    private val resolver = context.contentResolver
-    private val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
-
-    private fun relPath(sub: String?) = buildString {
-        append(Environment.DIRECTORY_DOWNLOADS).append("/ArchivoLoco/").append(folder).append('/')
-        if (!sub.isNullOrEmpty()) append(sub).append('/')
+    private fun target(sub: String?, name: String): File {
+        val dir = ArchiveStore.dir(context, folder).let { if (sub.isNullOrEmpty()) it else File(it, sub) }
+        dir.mkdirs()
+        return File(dir, name)
     }
 
-    private fun find(sub: String?, name: String): Uri? {
-        resolver.query(
-            collection,
-            arrayOf(MediaStore.MediaColumns._ID),
-            "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
-            arrayOf(relPath(sub), name),
-            null,
-        )?.use { c ->
-            if (c.moveToFirst()) return Uri.withAppendedPath(collection, c.getLong(0).toString())
-        }
-        return null
-    }
-
-    fun exists(sub: String?, name: String) = find(sub, name) != null
+    fun exists(sub: String?, name: String) = target(sub, name).exists()
 
     /**
-     * Writes a file. When [overwrite] is false and the file already exists it is left alone
-     * (write_if_new). [takenAtSec] sets the media date so galleries sort by post date.
+     * Writes a file atomically (temp file + rename). When [overwrite] is false and the file exists
+     * it is left alone (write_if_new). [takenAtSec] sets the file time so it sorts by post date.
      */
     fun write(
         sub: String?,
         name: String,
-        mime: String,
+        @Suppress("UNUSED_PARAMETER") mime: String,
         overwrite: Boolean = false,
         takenAtSec: Long? = null,
         block: (OutputStream) -> Unit,
     ): Boolean {
-        find(sub, name)?.let { existing ->
-            if (!overwrite) return false
-            resolver.openOutputStream(existing, "wt")?.use(block)
-            return true
-        }
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, mime)
-            put(MediaStore.MediaColumns.RELATIVE_PATH, relPath(sub))
-            put(MediaStore.MediaColumns.IS_PENDING, 1)
-            takenAtSec?.let { put(MediaStore.MediaColumns.DATE_TAKEN, it * 1000) }
-        }
-        val uri = resolver.insert(collection, values) ?: throw IllegalStateException("Cannot create $name")
+        val f = target(sub, name)
+        if (f.exists() && !overwrite) return false
+        val tmp = File(f.parentFile, ".$name.part")
         try {
-            resolver.openOutputStream(uri, "w")?.use(block)
-                ?: throw IllegalStateException("Cannot open $name")
-            values.clear()
-            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-        } catch (t: Throwable) {
-            resolver.delete(uri, null, null)
-            throw t
+            tmp.outputStream().use(block)
+            if (!tmp.renameTo(f)) {
+                f.delete()
+                if (!tmp.renameTo(f)) throw IllegalStateException("Cannot save $name")
+            }
+            takenAtSec?.takeIf { it > 0 }?.let { f.setLastModified(it * 1000) }
+        } finally {
+            tmp.delete()
         }
         return true
     }

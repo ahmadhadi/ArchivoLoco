@@ -33,7 +33,13 @@ Open it from **Open library**, the list icon at the top, or the "Done" notificat
 
 You can also **share a profile link from the Instagram app → ArchivoLoco** to fill in the username.
 
-Files go to `Download/ArchivoLoco/<username>/` (or `/saved/`):
+**Private by default.** Archives are kept in ArchivoLoco's own storage: they don't show up in your
+gallery or file manager, and they're removed if you uninstall the app. In the library, the
+**Save to phone** icon (next to Copy) exports a profile to `Download/ArchivoLoco/<username>/`, and
+**⋮ → Delete profile…** / **Delete all archives…** remove archives completely - private files, any
+copy saved to the phone, and download history.
+
+Inside each archive (private, or exported to `Download/ArchivoLoco/<username>/`):
 
 ```
 <id>.jpg / <id>.mp4             best-quality media

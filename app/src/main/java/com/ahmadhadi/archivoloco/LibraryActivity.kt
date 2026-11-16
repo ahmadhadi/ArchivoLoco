@@ -7,6 +7,15 @@ import android.os.Bundle
 import android.text.format.DateUtils
 import android.widget.VideoView
 import android.widget.Toast
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
@@ -151,6 +160,10 @@ private fun LibraryApp(startFolder: String?, onExit: () -> Unit) {
             onOpenPost = { index, reels -> push(Screen.Feed(s.folder, index, reels)) },
             onOpenGallery = { title -> push(Screen.Gallery(s.folder, title, 0)) },
             onRefresh = { reloadKey++ },
+            onDeleted = {
+                profile = null
+                stack = listOf(Screen.Home)
+            },
         )
         is Screen.Feed -> profile?.takeIf { it.folder == s.folder }?.let {
             FeedScreen(it, if (s.reels) it.posts.filter { p -> p.isReel } else it.posts, s.index, onBack = ::pop)
@@ -168,8 +181,33 @@ private fun LibraryApp(startFolder: String?, onExit: () -> Unit) {
 private fun HomeScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
     val ctx = LocalContext.current
     var entries by remember { mutableStateOf<List<LibraryEntry>?>(null) }
-    LaunchedEffect(Unit) { entries = Library.list(ctx) }
-    Scaffold(topBar = { BackBar("Library", onBack) }) { pad ->
+    var reload by remember { mutableStateOf(0) }
+    var menu by remember { mutableStateOf(false) }
+    var confirmAll by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(reload) { entries = Library.list(ctx) }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Library", fontWeight = FontWeight.SemiBold) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                actions = {
+                    if (!entries.isNullOrEmpty()) {
+                        Box {
+                            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Delete all archives…", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                                    onClick = { menu = false; confirmAll = true },
+                                )
+                            }
+                        }
+                    }
+                },
+            )
+        },
+    ) { pad ->
         val list = entries
         when {
             list == null -> Centered(pad) { Text("Loading…") }
@@ -181,6 +219,15 @@ private fun HomeScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
                 )
             }
             else -> LazyColumn(contentPadding = pad) {
+                item {
+                    Text(
+                        "Archives are private to ArchivoLoco - they don't appear in your gallery. " +
+                            "Open a profile and tap Save to phone to export it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
                 items(list) { e ->
                     ListItem(
                         modifier = Modifier.clickable { onOpen(e.folder) },
@@ -191,6 +238,22 @@ private fun HomeScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
                 }
             }
         }
+    }
+    if (confirmAll) {
+        ConfirmDelete(
+            title = "Delete all archives?",
+            text = "Removes every archived profile from ArchivoLoco, any copies you saved to the phone, " +
+                "and the download history. This can't be undone.",
+            onConfirm = {
+                confirmAll = false
+                scope.launch {
+                    Library.deleteAll(ctx)
+                    Toast.makeText(ctx, "All archives deleted", Toast.LENGTH_SHORT).show()
+                    reload++
+                }
+            },
+            onDismiss = { confirmAll = false },
+        )
     }
 }
 
@@ -204,9 +267,14 @@ private fun ProfileScreen(
     onOpenPost: (index: Int, reels: Boolean) -> Unit,
     onOpenGallery: (String) -> Unit,
     onRefresh: () -> Unit,
+    onDeleted: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var exporting by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
     val username = profile?.username ?: title
     Scaffold(
@@ -219,7 +287,42 @@ private fun ProfileScreen(
                         clipboard.setText(AnnotatedString(username))
                         Toast.makeText(ctx, "Copied @$username", Toast.LENGTH_SHORT).show()
                     }) { Icon(CopyIcon, "Copy username") }
-                    IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "Refresh") }
+                    if (exporting) {
+                        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                        }
+                    } else {
+                        IconButton(enabled = profile != null, onClick = {
+                            exporting = true
+                            scope.launch {
+                                val n = runCatching { Library.exportToPhone(ctx, title) }
+                                exporting = false
+                                Toast.makeText(
+                                    ctx,
+                                    n.fold(
+                                        { if (it == 0) "Already saved to Download/ArchivoLoco/$title" else "Saved $it files to Download/ArchivoLoco/$title" },
+                                        { "Couldn't save: ${it.message}" },
+                                    ),
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        }) { Icon(SaveToPhoneIcon, "Save to phone (gallery)") }
+                    }
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Refresh") },
+                                leadingIcon = { Icon(Icons.Filled.Refresh, null) },
+                                onClick = { menu = false; onRefresh() },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete profile…", color = MaterialTheme.colorScheme.error) },
+                                leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                                onClick = { menu = false; confirmDelete = true },
+                            )
+                        }
+                    }
                 },
             )
         },
@@ -304,6 +407,22 @@ private fun ProfileScreen(
                 }
             }
         }
+    }
+    if (confirmDelete) {
+        ConfirmDelete(
+            title = "Delete @$username?",
+            text = "Removes this profile's archive from ArchivoLoco, any copy saved to Download/ArchivoLoco/$title, " +
+                "and its download history. This can't be undone.",
+            onConfirm = {
+                confirmDelete = false
+                scope.launch {
+                    Library.delete(ctx, title)
+                    Toast.makeText(ctx, "Deleted @$username", Toast.LENGTH_SHORT).show()
+                    onDeleted()
+                }
+            },
+            onDismiss = { confirmDelete = false },
+        )
     }
 }
 
@@ -677,4 +796,32 @@ private val CopyIcon: ImageVector = ImageVector.Builder("copy", 24.dp, 24.dp, 24
         verticalLineTo(7f); curveTo(21f, 5.9f, 20.1f, 5f, 19f, 5f); close()
         moveTo(19f, 21f); horizontalLineTo(8f); verticalLineTo(7f); horizontalLineTo(19f); close()
     }
+}.build()
+
+@Composable
+private fun ConfirmDelete(title: String, text: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** A phone with a down-arrow: "save to phone". Drawn here; the core icon set has none. */
+private val SaveToPhoneIcon: ImageVector = ImageVector.Builder("save_to_phone", 24.dp, 24.dp, 24f, 24f).apply {
+    addPath(
+        pathData = androidx.compose.ui.graphics.vector.PathParser().parsePathString(
+            // phone outline
+            "M17,1H7C5.9,1 5,1.9 5,3v18c0,1.1 0.9,2 2,2h10c1.1,0 2,-0.9 2,-2V3C19,1.9 18.1,1 17,1z" +
+                "M17,19H7V5h10V19z" +
+                // arrow into the screen
+                "M11,7h2v5.17l1.59,-1.58L16,12l-4,4l-4,-4l1.41,-1.41L11,12.17z",
+        ).toNodes(),
+        fill = SolidColor(Color.Black),
+    )
 }.build()
