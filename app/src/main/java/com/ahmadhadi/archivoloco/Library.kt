@@ -191,19 +191,6 @@ object Library {
         ctx.contentResolver.openInputStream(uri)?.use { JSONObject(it.readBytes().toString(Charsets.UTF_8)) }
     }.getOrNull()
 
-    suspend fun list(ctx: Context): List<LibraryEntry> = withContext(Dispatchers.IO) {
-        val byPath = scan(ctx)
-        byPath.keys.map { it.substringBefore('/') }.distinct().filter { it.isNotEmpty() && it != "logs" }.map { folder ->
-            val root = byPath["$folder/"].orEmpty()
-            LibraryEntry(
-                folder = folder,
-                picture = root.firstOrNull { it.name.startsWith("profile_pic.") }?.uri,
-                postCount = root.count { it.name.endsWith("-media-info-0000.json") },
-                fileCount = byPath.filterKeys { it.startsWith("$folder/") }.values.sumOf { it.size },
-            )
-        }.sortedBy { it.folder.lowercase() }
-    }
-
     suspend fun load(ctx: Context, folder: String): ArchivedProfile = withContext(Dispatchers.IO) {
         val byPath = scan(ctx, folder)
         val root = byPath["$folder/"].orEmpty()
