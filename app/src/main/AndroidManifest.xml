@@ -36,6 +36,11 @@
         </activity>
 
         <activity
+            android:name=".LibraryActivity"
+            android:exported="false"
+            android:label="Library" />
+
+        <activity
             android:name=".LoginActivity"
             android:exported="false"
             android:label="@string/login_title" />

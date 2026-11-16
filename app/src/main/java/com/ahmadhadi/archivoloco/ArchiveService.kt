@@ -89,7 +89,12 @@ class ArchiveService : Service() {
             JobBus.finish()
             updater.cancel()
             stopForeground(STOP_FOREGROUND_DETACH)
-            notify(buildNotification("$title: $outcome", JobBus.state.value.stats.summary(), ongoing = false))
+            notify(
+                buildNotification(
+                    "$title: $outcome", JobBus.state.value.stats.summary(), ongoing = false,
+                    folder = if (saved) "saved" else username,
+                ),
+            )
             stopSelf()
         }
         return START_NOT_STICKY
@@ -110,9 +115,15 @@ class ArchiveService : Service() {
     private fun notify(n: Notification) =
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, n)
 
-    private fun buildNotification(title: String, text: String, ongoing: Boolean): Notification {
+    private fun buildNotification(title: String, text: String, ongoing: Boolean, folder: String? = null): Notification {
+        // When a job finishes, tapping the notification opens that archive in the offline library.
+        val target = if (folder != null) {
+            Intent(this, LibraryActivity::class.java).putExtra(LibraryActivity.EXTRA_FOLDER, folder)
+        } else {
+            Intent(this, MainActivity::class.java)
+        }
         val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
+            this, if (folder != null) 2 else 0, target,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val b = Notification.Builder(this, CHANNEL)

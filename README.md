@@ -22,6 +22,11 @@ comments, saved posts and private profiles you follow.
 
 Options: include comments, include reply comments (slow), re-download everything (ignore history).
 
+**Offline library.** Everything you archive can be browsed in the app without internet, laid out
+like Instagram: a profile header and post grid, a feed with swipeable photos and videos, captions,
+likes and dates, a comments sheet (when comments were archived), and stories/highlights viewers.
+Open it from **Open library**, the list icon at the top, or the "Done" notification.
+
 You can also **share a profile link from the Instagram app → ArchivoLoco** to fill in the username.
 
 Files go to `Download/ArchivoLoco/<username>/` (or `/saved/`):

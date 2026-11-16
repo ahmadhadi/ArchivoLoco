@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Info
@@ -237,6 +238,11 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
             LargeTopAppBar(
                 title = { Text("ArchivoLoco", fontWeight = FontWeight.SemiBold) },
                 scrollBehavior = scroll,
+                actions = {
+                    androidx.compose.material3.IconButton(onClick = {
+                        ctx.startActivity(Intent(ctx, LibraryActivity::class.java))
+                    }) { Icon(Icons.AutoMirrored.Filled.List, "Library") }
+                },
                 colors = TopAppBarDefaults.largeTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
                     scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -450,6 +456,14 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
                             Spacer(Modifier.width(8.dp))
                             Text("Start archiving", style = MaterialTheme.typography.titleMedium)
                         }
+                    }
+                    FilledTonalButton(
+                        onClick = { ctx.startActivity(Intent(ctx, LibraryActivity::class.java)) },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.List, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Open library (view offline)", style = MaterialTheme.typography.titleSmall)
                     }
                     Row(
                         Modifier.fillMaxWidth(),
