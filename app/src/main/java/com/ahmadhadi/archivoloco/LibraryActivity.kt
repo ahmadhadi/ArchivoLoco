@@ -100,10 +100,11 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import coil.Coil
-import coil.ImageLoader
-import coil.compose.AsyncImage
-import coil.decode.VideoFrameDecoder
+import coil3.ImageLoader
+import coil3.SingletonImageLoader
+import coil3.compose.AsyncImage
+import coil3.request.crossfade
+import coil3.video.VideoFrameDecoder
 import java.text.DateFormat
 import java.text.NumberFormat
 import java.util.Date
@@ -113,12 +114,13 @@ class LibraryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        Coil.setImageLoader(
-            ImageLoader.Builder(this)
+        // Local files only - Coil's network module isn't included, so it can't fetch anything online.
+        SingletonImageLoader.setSafe { ctx ->
+            ImageLoader.Builder(ctx)
                 .components { add(VideoFrameDecoder.Factory()) }
                 .crossfade(true)
-                .build(),
-        )
+                .build()
+        }
         val start = intent.getStringExtra(EXTRA_FOLDER)
         setContent { ArchivoTheme { LibraryApp(start) { finish() } } }
     }
