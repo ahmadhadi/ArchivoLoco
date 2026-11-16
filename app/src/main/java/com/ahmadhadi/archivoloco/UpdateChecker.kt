@@ -12,6 +12,9 @@ data class UpdateInfo(
     val version: String,
     val apkUrl: String,
     val pageUrl: String,
+    val size: Long = -1,
+    /** Lower-case hex SHA-256 of the APK as published by GitHub, if available. */
+    val sha256: String? = null,
 )
 
 /**
@@ -70,11 +73,16 @@ object UpdateChecker {
         val pageUrl = json.optString("html_url")
         val assets = json.optJSONArray("assets")
         var apkUrl = ""
+        var size = -1L
+        var sha256: String? = null
         if (assets != null) {
             for (i in 0 until assets.length()) {
                 val a = assets.optJSONObject(i) ?: continue
                 if (a.optString("name").endsWith(".apk")) {
                     apkUrl = a.optString("browser_download_url")
+                    size = a.optLong("size", -1)
+                    sha256 = a.optString("digest").takeIf { it.startsWith("sha256:") }
+                        ?.removePrefix("sha256:")?.lowercase()
                     break
                 }
             }
@@ -85,6 +93,8 @@ object UpdateChecker {
             version = remote,
             apkUrl = apkUrl.takeIf { it.startsWith(trusted) } ?: pageUrl.takeIf { it.startsWith(trusted) } ?: "${trusted}releases/latest",
             pageUrl = pageUrl.takeIf { it.startsWith(trusted) } ?: "${trusted}releases/latest",
+            size = size,
+            sha256 = sha256,
         )
     }
 

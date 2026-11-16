@@ -86,9 +86,11 @@ plus `ARCHIVOLOCO_KEYSTORE_PASSWORD`.
 - **Talks only to Instagram.** Every request, including redirects, is checked against an allowlist:
   `*.instagram.com` and Meta's media CDNs (`*.cdninstagram.com`, `*.fbcdn.net`), HTTPS only. Anything
   else is blocked (`HostPolicy.kt`). No analytics, crash reporting, ads or telemetry SDKs.
-- **Update check (optional):** once a day the app asks `api.github.com` for this repo's latest release,
-  using a separate client that can reach nothing else and sends no cookies or personal data. Turn it off
-  under **App → Check for updates automatically**; updates download in your browser, never silently.
+- **Updates (optional):** once a day the app asks `api.github.com` for this repo's latest release (turn
+  off under **App → Check for updates automatically**). **Update now** downloads the APK inside the app
+  from this repo's GitHub release only, verifies GitHub's SHA-256 checksum, and hands it to Android's
+  installer, which shows its confirmation and also rejects any APK not signed with the same key.
+  Nothing installs without your tap.
 - **Your session cookie goes only to `*.instagram.com`**, never to CDNs or anywhere else.
 - **No background activity on its own.** Work runs only after you tap Start, shows a notification with
   Stop, ends when the job finishes, and stops if you swipe the app away. No boot receivers, alarms,

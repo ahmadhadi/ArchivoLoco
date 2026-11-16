@@ -185,6 +185,16 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
     var updateBelow by remember { mutableStateOf(false) }
     var checkStatus by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
+    val updateState by Updater.state.collectAsState()
+    var updateJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    fun startUpdate(u: UpdateInfo) {
+        updateJob = scope.launch { Updater.downloadAndInstall(ctx, u) }
+    }
+    // Coming back from the "Install unknown apps" screen with permission granted: carry on.
+    LaunchedEffect(loginTick) {
+        val u = update
+        if (updateState is UpdateState.NeedsPermission && u != null && Updater.canInstall(ctx)) startUpdate(u)
+    }
 
     fun checkForUpdate(manual: Boolean) {
         if (checkingUpdate) return
@@ -298,7 +308,15 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
 
             // ---- Update available (found by the automatic check)
             update?.takeIf { !updateBelow }?.let { u ->
-                item { UpdateCard(u, currentVersion, ::openUrl) { update = null } }
+                item {
+                    UpdateCard(
+                        u, currentVersion, updateState,
+                        onUpdate = { startUpdate(u) },
+                        onAllow = { Updater.openInstallPermission(ctx) },
+                        onCancel = { updateJob?.cancel() },
+                        onLater = { Updater.reset(); update = null },
+                    )
+                }
             }
 
             // ---- Account
@@ -511,7 +529,15 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
 
             // ---- Result of a manual check, right under the Check button
             update?.takeIf { updateBelow }?.let { u ->
-                item { UpdateCard(u, currentVersion, ::openUrl) { update = null; updateBelow = false } }
+                item {
+                    UpdateCard(
+                        u, currentVersion, updateState,
+                        onUpdate = { startUpdate(u) },
+                        onAllow = { Updater.openInstallPermission(ctx) },
+                        onCancel = { updateJob?.cancel() },
+                        onLater = { Updater.reset(); update = null; updateBelow = false },
+                    )
+                }
             }
         }
     }
@@ -631,7 +657,21 @@ private fun IconBadge(icon: ImageVector, bg: Color, fg: Color) {
 }
 
 @Composable
-private fun UpdateCard(u: UpdateInfo, currentVersion: String, openUrl: (String) -> Unit, onLater: () -> Unit) {
+private fun UpdateCard(
+    u: UpdateInfo,
+    currentVersion: String,
+    state: UpdateState,
+    onUpdate: () -> Unit,
+    onAllow: () -> Unit,
+    onCancel: () -> Unit,
+    onLater: () -> Unit,
+) {
+    val onCard = MaterialTheme.colorScheme.onTertiaryContainer
+    val accent = ButtonDefaults.buttonColors(
+        containerColor = MaterialTheme.colorScheme.tertiary,
+        contentColor = MaterialTheme.colorScheme.onTertiary,
+    )
+    fun mb(b: Long) = String.format(java.util.Locale.US, "%.1f", b / 1_048_576.0)
     SectionCard(color = MaterialTheme.colorScheme.tertiaryContainer) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -639,32 +679,76 @@ private fun UpdateCard(u: UpdateInfo, currentVersion: String, openUrl: (String) 
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "Update available",
+                        when (state) {
+                            is UpdateState.Downloading -> "Downloading update…"
+                            UpdateState.Installing -> "Installing update…"
+                            else -> "Update available"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        color = onCard,
                     )
                     Text(
-                        "Version ${u.version} · you have $currentVersion",
+                        "Version ${u.version} · you have $currentVersion" +
+                            if (u.size > 0) " · ${mb(u.size)} MB" else "",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        color = onCard,
                     )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { openUrl(u.apkUrl) },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiary,
-                        contentColor = MaterialTheme.colorScheme.onTertiary,
-                    ),
-                ) { Text("Download") }
-                TextButton(onClick = { openUrl(u.pageUrl) }) {
-                    Text("What's new", color = MaterialTheme.colorScheme.onTertiaryContainer)
+            when (state) {
+                is UpdateState.Downloading -> {
+                    val f = state.fraction
+                    if (f != null) {
+                        LinearProgressIndicator(progress = { f }, modifier = Modifier.fillMaxWidth())
+                    } else {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            (f?.let { "${(it * 100).toInt()}% · " } ?: "") +
+                                "${mb(state.bytes)}" + (if (state.total > 0) " / ${mb(state.total)}" else "") + " MB",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = onCard,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = onCancel) { Text("Cancel", color = onCard) }
+                    }
                 }
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onLater) {
-                    Text("Later", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                UpdateState.Installing -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text(
+                        "Confirm on Android's prompt. ArchivoLoco restarts on the new version.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = onCard,
+                    )
+                }
+                UpdateState.NeedsPermission -> {
+                    Text(
+                        "One-time step: allow ArchivoLoco to install updates (Settings → Install unknown apps).",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = onCard,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onAllow, colors = accent) { Text("Allow") }
+                        TextButton(onClick = onUpdate) { Text("I've allowed it", color = onCard) }
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = onLater) { Text("Later", color = onCard) }
+                    }
+                }
+                else -> {
+                    if (state is UpdateState.Failed) {
+                        Text(state.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onUpdate, colors = accent) {
+                            Icon(SaveIcon, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (state is UpdateState.Failed) "Try again" else "Update now")
+                        }
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = onLater) { Text("Later", color = onCard) }
+                    }
                 }
             }
         }
