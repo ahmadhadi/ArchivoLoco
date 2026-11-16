@@ -74,23 +74,14 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
         val userPk = user.getString("pk")
         val pageId = user.optString("id")
         val isPrivate = user.optBoolean("is_private")
-        val total = user.optJSONObject("polaris_ordered_timeline_connection")?.optInt("count", -1) ?: -1
+        val total = user.optJSONObject("polaris_ordered_timeline_connection")?.optInt("count", -1)?.takeIf { it >= 0 }
+            ?: user.optInt("media_count", -1)
         log("Profile found" + (if (total >= 0) ", $total posts" else "") + if (isPrivate) " (private)" else "")
 
         // 2. Stories and highlights need a login.
         if (loggedIn) {
-            try {
-                val ids = client.highlightIds(userPk)
-                log("Highlights: ${ids.size}")
-                if (ids.isNotEmpty()) archiveReels(ids, isHighlight = true, sub = "highlights")
-            } catch (e: IOException) {
-                log("⚠ Highlights skipped: ${e.message}")
-            }
-            try {
-                archiveReels(listOf(userPk), isHighlight = false, sub = "stories")
-            } catch (e: IOException) {
-                log("⚠ Stories skipped: ${e.message}")
-            }
+            archiveHighlights(userPk, username)
+            archiveStories(userPk, username)
         } else {
             log("Stories and highlights need a login - skipped")
             if (opts.comments) log("Comments need a login - skipped")
@@ -303,6 +294,98 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             val pi = conn.optJSONObject("page_info")
             if (pi == null || !pi.optBoolean("has_next_page")) break
             conn = client.timelinePage(username, pi.optString("end_cursor")) ?: break
+        }
+    }
+
+    /** Highlights the instaloader way (query_hash GraphQL), falling back to the reel gallery query. */
+    private suspend fun archiveHighlights(userPk: String, username: String) {
+        val reels = try {
+            client.highlightReels(userPk, username)
+        } catch (e: IOException) {
+            if (e is SessionExpiredException) throw e
+            log("Highlights list (new method) failed: ${e.message}; trying the older method…")
+            try {
+                val ids = client.highlightIds(userPk)
+                log("Highlights: ${ids.size}")
+                if (ids.isNotEmpty()) archiveReels(ids, isHighlight = true, sub = "highlights")
+            } catch (e2: IOException) {
+                log("⚠ Highlights skipped: ${e2.message}")
+            }
+            return
+        }
+        log("Highlights: ${reels.size}")
+        for ((id, title) in reels) {
+            currentCoroutineContext().ensureActive()
+            // Keep any language's letters (e.g. Arabic titles), drop path-unsafe characters, add the id to stay unique.
+            val clean = title.filter { it.isLetterOrDigit() || it == ' ' || it == '-' || it == '_' }.trim()
+                .replace(' ', '_').take(40)
+            val sub = "highlights/" + (if (clean.isEmpty()) "highlight" else clean) + "_" + safeFileName(id).takeLast(6)
+            try {
+                val items = client.storyItems(id, isHighlight = true, username)
+                var n = 0
+                for (i in 0 until items.length()) {
+                    items.optJSONObject(i)?.let { if (saveStoryItem(it, sub)) n++ }
+                }
+                log("✓ highlight \"${title.ifEmpty { id }}\": ${items.length()} items ($n new)")
+            } catch (e: IOException) {
+                if (e is SessionExpiredException) throw e
+                log("⚠ Highlight \"$title\": ${e.message}")
+                JobBus.stats { it.copy(failed = it.failed + 1) }
+            }
+            delay(opts.delayMs)
+        }
+    }
+
+    private suspend fun archiveStories(userPk: String, username: String) {
+        try {
+            val items = client.storyItems(userPk, isHighlight = false, username)
+            var n = 0
+            for (i in 0 until items.length()) {
+                items.optJSONObject(i)?.let { if (saveStoryItem(it, "stories")) n++ }
+            }
+            log("Current stories: ${items.length()} ($n new)")
+        } catch (e: IOException) {
+            if (e is SessionExpiredException) throw e
+            log("Stories (new method) failed: ${e.message}; trying the older method…")
+            try {
+                archiveReels(listOf(userPk), isHighlight = false, sub = "stories")
+            } catch (e2: IOException) {
+                log("⚠ Stories skipped: ${e2.message}")
+            }
+        }
+    }
+
+    /**
+     * Saves one story/highlight item. Handles the classic GraphQL format (display_resources /
+     * video_resources, as instaloader's StoryItem) and the newer API format (image_versions2 /
+     * video_versions). Returns true if a new file was written.
+     */
+    private suspend fun saveStoryItem(item: JSONObject, sub: String): Boolean {
+        if (item.has("image_versions2") || item.has("video_versions")) {
+            val before = JobBus.state.value.stats
+            saveItem(item, sub, item.optLong("taken_at"))
+            val after = JobBus.state.value.stats
+            return after.images + after.videos > before.images + before.videos
+        }
+        val id = safeFileName(item.optString("id").ifEmpty { return false })
+        val ts = item.optLong("taken_at_timestamp").takeIf { it > 0 }
+        fun bestSrc(arr: JSONArray?): String? {
+            if (arr == null) return null
+            var best: String? = null
+            var area = -1L
+            for (i in 0 until arr.length()) {
+                val r = arr.optJSONObject(i) ?: continue
+                val a = r.optLong("config_width") * r.optLong("config_height")
+                if (a >= area && r.optString("src").isNotEmpty()) { area = a; best = r.getString("src") }
+            }
+            return best
+        }
+        return if (item.optBoolean("is_video")) {
+            val url = bestSrc(item.optJSONArray("video_resources")) ?: return false
+            download(url, sub, id, ts, forceExt = "mp4").also { if (it) JobBus.stats { s -> s.copy(videos = s.videos + 1) } }
+        } else {
+            val url = bestSrc(item.optJSONArray("display_resources")) ?: item.optString("display_url").ifEmpty { return false }
+            download(url, sub, id, ts).also { if (it) JobBus.stats { s -> s.copy(images = s.images + 1) } }
         }
     }
 

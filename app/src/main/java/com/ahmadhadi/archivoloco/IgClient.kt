@@ -169,6 +169,43 @@ class IgClient(context: Context, private val bridge: WebBridge) {
             ?.optJSONObject("xdt_api__v1__feed__user_timeline_graphql_connection")
     }
 
+    /** Classic query_hash GraphQL (GET), as instaloader uses for stories and highlights. */
+    private suspend fun queryHash(hash: String, variables: JSONObject, referer: String): JSONObject? =
+        getJson(
+            "${IgConstants.BASE}/graphql/query/",
+            mapOf("query_hash" to hash, "variables" to variables.toString()),
+            headers = mapOf("referer" to referer),
+        ).optJSONObject("data")
+
+    /** The profile's highlight reels as (id, title). */
+    suspend fun highlightReels(userPk: String, username: String): List<Pair<String, String>> {
+        val vars = JSONObject()
+            .put("user_id", userPk).put("include_chaining", false).put("include_reel", false)
+            .put("include_suggested_users", false).put("include_logged_out_extras", false)
+            .put("include_highlight_reels", true)
+        val edges = queryHash("7c16654f22c819fb63d1183034a5162f", vars, "${IgConstants.BASE}/$username/")
+            ?.optJSONObject("user")?.optJSONObject("edge_highlight_reels")?.optJSONArray("edges")
+            ?: throw IgException("Instagram didn't return the highlights list")
+        return (0 until edges.length()).mapNotNull { i ->
+            val n = edges.optJSONObject(i)?.optJSONObject("node") ?: return@mapNotNull null
+            n.optString("id").takeIf { it.isNotEmpty() }?.let { it to n.optString("title") }
+        }
+    }
+
+    /** Items of one highlight (by highlight id) or of a user's current story (by user pk). */
+    suspend fun storyItems(id: String, isHighlight: Boolean, username: String): JSONArray {
+        val vars = if (isHighlight) {
+            JSONObject().put("reel_ids", JSONArray()).put("tag_names", JSONArray()).put("location_ids", JSONArray())
+                .put("highlight_reel_ids", JSONArray().put(id)).put("precomposed_overlay", false)
+        } else {
+            JSONObject().put("reel_ids", JSONArray().put(id)).put("precomposed_overlay", false)
+        }
+        val hash = if (isHighlight) "45246d3fe16ccc6577e0bd297a5db1ab" else "303a4ae99711322310f25250d988f3b7"
+        val reels = queryHash(hash, vars, "${IgConstants.BASE}/$username/")?.optJSONArray("reels_media")
+            ?: throw IgException("Instagram didn't return ${if (isHighlight) "highlight" else "story"} items")
+        return reels.optJSONObject(0)?.optJSONArray("items") ?: JSONArray()
+    }
+
     /** Reels tab via the logged-in browser session (fallback when the guest query is refused). */
     suspend fun reelsPage(userPk: String, username: String, after: String?): JSONObject? =
         graphql(
