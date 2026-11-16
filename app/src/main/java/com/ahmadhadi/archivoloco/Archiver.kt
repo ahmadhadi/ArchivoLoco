@@ -382,6 +382,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             for ((id, title) in batch) {
                 val items = got["highlight:$id"] ?: continue
                 val sub = highlightSub(title, id)
+                saveHighlightCover(id, sub)
                 var n = 0
                 for (i in 0 until items.length()) items.optJSONObject(i)?.let { if (saveStoryItem(it, sub)) n++ }
                 log("✓ highlight \"${title.ifEmpty { id }}\": ${items.length()} items ($n new)")
@@ -394,6 +395,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             currentCoroutineContext().ensureActive()
             val name = title.ifEmpty { id }
             val sub = highlightSub(title, id)
+            saveHighlightCover(id, sub)
             var saved = try {
                 archiveReels(listOf(id), isHighlight = true, sub = sub, label = "highlight \"$name\"")
             } catch (e: IOException) {
@@ -458,6 +460,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
      * video_versions). Returns true if a new file was written.
      */
     private suspend fun saveStoryItem(item: JSONObject, sub: String): Boolean {
+        saveStoryMeta(item, sub)
         if (item.has("image_versions2") || item.has("video_versions")) {
             val before = JobBus.state.value.stats
             saveItem(item, sub, item.optLong("taken_at"))
@@ -486,6 +489,38 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
         }
     }
 
+    /**
+     * Keeps a story item's details next to its media ("<id>.json"), so the viewer can show who a
+     * reshared story came from and who is mentioned, and saves those accounts' profile pictures.
+     */
+    private suspend fun saveStoryMeta(item: JSONObject, sub: String) {
+        val id = safeFileName(item.optString("id").ifEmpty { item.optString("pk") })
+        if (id == "item") return
+        val ts = item.optLong("taken_at").takeIf { it > 0 } ?: item.optLong("taken_at_timestamp").takeIf { it > 0 }
+        if (!out.exists(sub, "$id.json")) out.writeText(sub, "$id.json", item.toString(2), takenAtSec = ts)
+        for (p in StoryPeople.find(item)) {
+            val url = p.avatarUrl ?: continue
+            val name = safeFileName(p.username)
+            if (out.exists("_people", "$name.jpg")) continue
+            try {
+                download(url, "_people", name, null, forceExt = "jpg")
+            } catch (e: IOException) {
+                // A missing avatar isn't worth failing the story for.
+            }
+        }
+    }
+
+    /** Saves a highlight's cover image as "cover.jpg" in its folder (once). */
+    private suspend fun saveHighlightCover(id: String, sub: String) {
+        val url = mobile.highlightCovers[id] ?: return
+        if (out.exists(sub, "cover.jpg")) return
+        try {
+            download(url, sub, "cover", null, forceExt = "jpg")
+        } catch (e: IOException) {
+            log("⚠ Highlight cover: ${e.message}")
+        }
+    }
+
     /** Port of ProfileScraper._dispatch_reel + save_reel_item. */
     private suspend fun archiveReels(reelIds: List<String>, isHighlight: Boolean, sub: String, label: String? = null): Int {
         var after: String? = null
@@ -500,7 +535,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
                 for (j in 0 until items.length()) {
                     val item = items.optJSONObject(j) ?: continue
                     try {
-                        saveItem(item, sub, item.optLong("taken_at"))
+                        saveStoryItem(item, sub)
                         n++
                     } catch (e: IOException) {
                         if (e is SessionExpiredException) throw e

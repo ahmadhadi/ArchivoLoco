@@ -7,6 +7,10 @@ import android.os.Bundle
 import android.text.format.DateUtils
 import android.widget.VideoView
 import android.widget.Toast
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -499,7 +503,46 @@ private fun Stat(value: String, label: String, modifier: Modifier) {
 private fun FeedScreen(profile: ArchivedProfile, posts: List<ArchivedPost>, startIndex: Int, onBack: () -> Unit) {
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = startIndex)
     var commentsFor by remember { mutableStateOf<ArchivedPost?>(null) }
-    Scaffold(topBar = { BackBar("Posts", onBack) }) { pad ->
+    val scope = rememberCoroutineScope()
+    var scrub by remember { mutableStateOf<Float?>(null) }
+    Scaffold(
+        topBar = { BackBar("Posts", onBack) },
+        bottomBar = {
+            // Scrub through all posts like a video timeline.
+            if (posts.size > 3) {
+                val current = scrub?.toInt() ?: listState.firstVisibleItemIndex
+                val post = posts.getOrNull(current)
+                Surface(color = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 3.dp) {
+                    Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${current + 1} / ${posts.size}",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Spacer(Modifier.weight(1f))
+                            post?.let {
+                                Text(
+                                    DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it.takenAt * 1000)),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        Slider(
+                            value = (scrub ?: listState.firstVisibleItemIndex.toFloat()),
+                            onValueChange = {
+                                scrub = it
+                                scope.launch { listState.scrollToItem(it.toInt().coerceIn(0, posts.size - 1)) }
+                            },
+                            onValueChangeFinished = { scrub = null },
+                            valueRange = 0f..(posts.size - 1).toFloat(),
+                        )
+                    }
+                }
+            }
+        },
+    ) { pad ->
         LazyColumn(state = listState, contentPadding = pad) {
             itemsIndexed(posts, key = { _, p -> p.id }) { _, post ->
                 PostCard(profile, post, onComments = { commentsFor = post })
@@ -641,23 +684,14 @@ private fun MediaPager(media: List<Media>) {
     }
 }
 
-/** A photo, or a video that shows its first frame and plays (looping) when tapped. */
+/** A photo, or a video that shows its first frame and, when tapped, plays with a seek bar. */
 @Composable
 private fun MediaView(m: Media, active: Boolean, fit: ContentScale) {
     var playing by remember(m.uri) { mutableStateOf(false) }
     LaunchedEffect(active) { if (!active) playing = false }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         if (m.isVideo && playing) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize().clickable { playing = false },
-                factory = { c ->
-                    VideoView(c).apply {
-                        setVideoURI(m.uri)
-                        setOnPreparedListener { it.isLooping = true; start() }
-                    }
-                },
-                onRelease = { it.stopPlayback() },
-            )
+            VideoPlayer(m.uri, onClose = { playing = false })
         } else {
             AsyncImage(
                 model = m.uri,
@@ -674,6 +708,81 @@ private fun MediaView(m: Media, active: Boolean, fit: ContentScale) {
             }
         }
     }
+}
+
+/** Local video with play/pause, a draggable timeline and elapsed / total time. */
+@Composable
+private fun VideoPlayer(uri: Uri, onClose: () -> Unit) {
+    var view by remember { mutableStateOf<VideoView?>(null) }
+    var duration by remember { mutableStateOf(0) }
+    var position by remember { mutableStateOf(0) }
+    var paused by remember { mutableStateOf(false) }
+    var dragging by remember { mutableStateOf<Float?>(null) }
+    var showControls by remember { mutableStateOf(true) }
+
+    LaunchedEffect(view) {
+        while (true) {
+            view?.let { v -> if (dragging == null) position = v.currentPosition }
+            kotlinx.coroutines.delay(200)
+        }
+    }
+    Box(Modifier.fillMaxSize()) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize().clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+            ) { showControls = !showControls },
+            factory = { c ->
+                VideoView(c).apply {
+                    setVideoURI(uri)
+                    setOnPreparedListener { mp ->
+                        mp.isLooping = true
+                        duration = mp.duration
+                        start()
+                    }
+                    view = this
+                }
+            },
+            onRelease = { it.stopPlayback() },
+        )
+        if (showControls) {
+            Row(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = {
+                    view?.let { v -> if (v.isPlaying) { v.pause(); paused = true } else { v.start(); paused = false } }
+                }) {
+                    Icon(if (paused) Icons.Filled.PlayArrow else PauseIcon, if (paused) "Play" else "Pause", tint = Color.White)
+                }
+                Text(formatTime(dragging?.toInt() ?: position), color = Color.White, fontSize = 12.sp)
+                Slider(
+                    value = (dragging ?: position.toFloat()).coerceIn(0f, maxOf(duration, 1).toFloat()),
+                    onValueChange = { dragging = it },
+                    onValueChangeFinished = {
+                        dragging?.let { view?.seekTo(it.toInt()); position = it.toInt() }
+                        dragging = null
+                    },
+                    valueRange = 0f..maxOf(duration, 1).toFloat(),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color.White,
+                        activeTrackColor = Color.White,
+                        inactiveTrackColor = Color.White.copy(alpha = 0.35f),
+                    ),
+                )
+                Text(formatTime(duration), color = Color.White, fontSize = 12.sp)
+                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close video", tint = Color.White) }
+            }
+        }
+    }
+}
+
+private fun formatTime(ms: Int): String {
+    val s = ms / 1000
+    return "%d:%02d".format(s / 60, s % 60)
 }
 
 @Composable
@@ -769,7 +878,7 @@ private fun HighlightCircle(g: StoryGroup, onClick: () -> Unit) {
                 .background(MaterialTheme.colorScheme.surfaceContainerHighest),
         ) {
             g.cover?.let {
-                AsyncImage(model = it.uri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                AsyncImage(model = it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             }
         }
         Spacer(Modifier.height(4.dp))
@@ -821,6 +930,24 @@ private fun GalleryScreen(p: ArchivedProfile, group: StoryGroup, onBack: () -> U
                     modifier = Modifier.weight(1f))
                 Text("${pager.currentPage + 1}/${media.size}", color = Color.White.copy(alpha = 0.8f))
                 IconButton(onClick = onBack) { Icon(Icons.Filled.Close, "Close", tint = Color.White) }
+            }
+            // Reshared from (like Instagram's repost line under the header).
+            media.getOrNull(pager.currentPage)?.people?.firstOrNull { it.isReshareAuthor }?.let { author ->
+                Row(Modifier.padding(start = 40.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(RepostIcon, "Reshared from", tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    PersonChip(author, dark = true)
+                }
+            }
+        }
+        // Mentioned accounts, as tappable-style chips with a copy button.
+        val mentions = media.getOrNull(pager.currentPage)?.people?.filter { !it.isReshareAuthor }.orEmpty()
+        if (mentions.isNotEmpty()) {
+            Column(
+                Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 96.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                mentions.take(4).forEach { PersonChip(it, dark = false, large = true) }
             }
         }
     }
@@ -934,3 +1061,54 @@ fun Modifier.longPressCopy(text: String, onClick: (() -> Unit)? = null): Modifie
         },
     )
 }
+
+/** Avatar + username (+ full name) with a small copy button - like Instagram's profile popup. */
+@Composable
+private fun PersonChip(p: StoryPerson, dark: Boolean, large: Boolean = false) {
+    val clipboard = LocalClipboardManager.current
+    val ctx = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val fg = if (dark) Color.White else MaterialTheme.colorScheme.onSurface
+    Surface(
+        shape = CircleShape,
+        color = if (dark) Color.Black.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+        modifier = Modifier.longPressCopy(p.username),
+    ) {
+        Row(
+            Modifier.padding(start = 4.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Avatar(p.avatar, if (large) 36.dp else 22.dp)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.padding(end = 2.dp)) {
+                Text(p.username, color = fg, fontWeight = FontWeight.SemiBold, fontSize = if (large) 14.sp else 13.sp, maxLines = 1)
+                if (large && p.fullName.isNotEmpty()) {
+                    Text(p.fullName, color = fg.copy(alpha = 0.75f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    clipboard.setText(AnnotatedString(p.username))
+                    if (android.os.Build.VERSION.SDK_INT < 33) Toast.makeText(ctx, "Copied @${p.username}", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.size(if (large) 36.dp else 28.dp),
+            ) { Icon(CopyIcon, "Copy @${p.username}", tint = fg, modifier = Modifier.size(if (large) 18.dp else 15.dp)) }
+        }
+    }
+}
+
+private fun glyph(name: String, path: String): ImageVector = ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
+    addPath(
+        pathData = androidx.compose.ui.graphics.vector.PathParser().parsePathString(path).toNodes(),
+        fill = SolidColor(Color.Black),
+    )
+}.build()
+
+/** Two arrows in a loop - Instagram's repost mark. */
+private val RepostIcon: ImageVector = glyph(
+    "repost",
+    "M7,7h10v3l4,-4l-4,-4v3H5v6h2V7zM17,17H7v-3l-4,4l4,4v-3h12v-6h-2V17z",
+)
+
+private val PauseIcon: ImageVector = glyph("pause", "M6,19h4V5H6v14zM14,5v14h4V5h-4z")

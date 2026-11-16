@@ -117,12 +117,19 @@ class MobileApi {
         return call(Request.Builder().url("$BASE/$path").post(body), path)
     }
 
+    /** Cover image URL per highlight id, filled by [highlightsTray]. */
+    val highlightCovers = HashMap<String, String>()
+
     /** The profile's highlights as (numeric id, title). */
     suspend fun highlightsTray(userPk: String): List<Pair<String, String>> {
         val tray = get("api/v1/highlights/$userPk/highlights_tray/").optJSONArray("tray") ?: return emptyList()
         return (0 until tray.length()).mapNotNull { i ->
             val t = tray.optJSONObject(i) ?: return@mapNotNull null
             val id = t.optString("id").substringAfterLast(':')
+            t.optJSONObject("cover_media")?.let { c ->
+                (c.optJSONObject("cropped_image_version") ?: c.optJSONObject("full_image_version"))
+                    ?.optString("url")?.takeIf { it.isNotEmpty() }
+            }?.let { highlightCovers[id] = it }
             if (id.isEmpty() || !id.all { it.isDigit() }) null else id to t.optString("title")
         }
     }

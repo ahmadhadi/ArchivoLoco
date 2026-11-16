@@ -20,7 +20,59 @@ import java.io.File
 
 data class ArchivedFile(val name: String, val uri: Uri, val mime: String, val modified: Long = 0)
 
-data class Media(val uri: Uri, val isVideo: Boolean, val width: Int, val height: Int)
+data class Media(
+    val uri: Uri,
+    val isVideo: Boolean,
+    val width: Int,
+    val height: Int,
+    /** For story/highlight items: reshare author and mentioned accounts. */
+    val people: List<StoryPerson> = emptyList(),
+)
+
+data class StoryPerson(val username: String, val fullName: String, val avatar: Uri?, val isReshareAuthor: Boolean)
+
+/**
+ * Finds the accounts a story item points to: the original author of a reshared story/post and
+ * mentioned accounts. Instagram uses several layouts (reel_mentions, mention stickers, reshare /
+ * attribution objects, tappable objects), so this walks the item and classifies any user-like
+ * object by the key it sits under. The story owner is excluded.
+ */
+object StoryPeople {
+    data class Found(val username: String, val fullName: String, val avatarUrl: String?, val isReshareAuthor: Boolean)
+
+    fun find(item: JSONObject): List<Found> {
+        val owner = (item.optJSONObject("user") ?: item.optJSONObject("owner"))?.optString("username").orEmpty()
+        val found = LinkedHashMap<String, Found>()
+        fun walk(v: Any?, path: String, depth: Int) {
+            if (depth > 12) return
+            when (v) {
+                is JSONObject -> {
+                    val username = v.optString("username")
+                    if (username.isNotEmpty() && username != owner && path.isNotEmpty()) {
+                        val p = path.lowercase()
+                        val reshare = listOf("reshare", "repost", "attribution", "original", "feed_media", "story_app").any { it in p }
+                        val prev = found[username]
+                        found[username] = Found(
+                            username = username,
+                            fullName = v.optString("full_name").ifEmpty { prev?.fullName.orEmpty() },
+                            avatarUrl = v.optString("profile_pic_url").ifEmpty { null } ?: prev?.avatarUrl,
+                            isReshareAuthor = reshare || prev?.isReshareAuthor == true,
+                        )
+                    }
+                    val keys = v.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        if (path.isEmpty() && (k == "user" || k == "owner")) continue // the story's own author
+                        walk(v.opt(k), "$path/$k", depth + 1)
+                    }
+                }
+                is JSONArray -> for (i in 0 until v.length()) walk(v.opt(i), path, depth + 1)
+            }
+        }
+        walk(item, "", 0)
+        return found.values.sortedByDescending { it.isReshareAuthor }
+    }
+}
 
 data class Comment(
     val username: String,
@@ -60,8 +112,9 @@ data class ArchivedProfile(
 )
 
 /** One highlight (or the current story): a title, a cover and its items in order. */
-data class StoryGroup(val key: String, val title: String, val media: List<Media>) {
-    val cover: Media? get() = media.firstOrNull { !it.isVideo } ?: media.firstOrNull()
+data class StoryGroup(val key: String, val title: String, val media: List<Media>, val coverUri: Uri? = null) {
+    /** The highlight's own cover if archived, else its first photo. */
+    val cover: Uri? get() = coverUri ?: (media.firstOrNull { !it.isVideo } ?: media.firstOrNull())?.uri
 }
 
 data class LibraryEntry(val folder: String, val picture: Uri?, val postCount: Int, val fileCount: Int)
@@ -214,10 +267,21 @@ object Library {
             parsePost(id, info, mediaById, commentsJson)
         }.sortedByDescending { it.takenAt }
 
-        fun toMedia(files: List<ArchivedFile>) = files
-            .filter { it.mime.startsWith("image/") || it.mime.startsWith("video/") }
-            .sortedWith(compareBy({ it.modified }, { it.name }))
-            .map { Media(it.uri, it.mime.startsWith("video/"), 0, 0) }
+        // Avatars of reshared/mentioned accounts, saved under "<folder>/_people/<username>.jpg".
+        val avatars = byPath["$folder/_people/"].orEmpty().associate { it.name.substringBeforeLast('.') to it.uri }
+
+        fun toMedia(files: List<ArchivedFile>): List<Media> {
+            val json = files.filter { it.name.endsWith(".json") }.associateBy { it.name.removeSuffix(".json") }
+            return files
+                .filter { (it.mime.startsWith("image/") || it.mime.startsWith("video/")) && !it.name.startsWith("cover.") }
+                .sortedWith(compareBy({ it.modified }, { it.name }))
+                .map { f ->
+                    val people = json[f.name.substringBeforeLast('.')]?.let { readJson(ctx, it.uri) }
+                        ?.let { StoryPeople.find(it) }.orEmpty()
+                        .map { StoryPerson(it.username, it.fullName, avatars[safeFileName(it.username)], it.isReshareAuthor) }
+                    Media(f.uri, f.mime.startsWith("video/"), 0, 0, people)
+                }
+        }
 
         // Highlights are saved one folder per highlight ("<Title>_<id>"); older runs saved them flat.
         val hlRoot = "$folder/highlights/"
@@ -225,7 +289,10 @@ object Library {
             val dir = rel.removePrefix(hlRoot).trimEnd('/')
             val title = if (dir.isEmpty()) "Highlights"
             else dir.substringBeforeLast('_').replace('_', ' ').trim().ifEmpty { "Highlight" }
-            StoryGroup(key = dir.ifEmpty { "_" }, title = title, media = toMedia(files))
+            StoryGroup(
+                key = dir.ifEmpty { "_" }, title = title, media = toMedia(files),
+                coverUri = files.firstOrNull { it.name.startsWith("cover.") }?.uri,
+            )
         }.filter { it.media.isNotEmpty() }.sortedBy { it.title.lowercase() }
 
         val p = profileJson ?: JSONObject()
