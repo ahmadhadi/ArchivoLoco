@@ -18,6 +18,14 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -171,18 +179,33 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
     var update by remember { mutableStateOf<UpdateInfo?>(null) }
     var checkingUpdate by remember { mutableStateOf(false) }
     var autoUpdate by remember { mutableStateOf(UpdateChecker.isAutoEnabled(ctx)) }
+    // A manual check shows its result right under the Check button; an automatic one at the top.
+    var updateBelow by remember { mutableStateOf(false) }
+    var checkStatus by remember { mutableStateOf<String?>(null) }
+    val listState = rememberLazyListState()
 
     fun checkForUpdate(manual: Boolean) {
         if (checkingUpdate) return
         checkingUpdate = true
         scope.launch {
+            if (manual) checkStatus = null
             try {
-                update = UpdateChecker.check(ctx)
-                if (manual && update == null) snackbar.showSnackbar("You're on the latest version ($currentVersion)")
+                val found = UpdateChecker.check(ctx)
+                update = found
+                if (manual) {
+                    updateBelow = true
+                    checkStatus = if (found == null) "✓ You're on the latest version" else null
+                }
             } catch (e: Exception) {
-                if (manual) snackbar.showSnackbar("Couldn't check for updates: ${e.message}")
+                if (manual) checkStatus = "Couldn't check: ${e.message}"
             } finally {
                 checkingUpdate = false
+            }
+            if (manual) {
+                // Bring the result (just below the App card, at the end of the list) into view.
+                kotlinx.coroutines.delay(150)
+                val last = listState.layoutInfo.totalItemsCount - 1
+                if (last >= 0) listState.animateScrollToItem(last)
             }
         }
     }
@@ -253,6 +276,7 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
         containerColor = MaterialTheme.colorScheme.surface,
     ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 start = 16.dp, end = 16.dp,
@@ -270,51 +294,9 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
                 )
             }
 
-            // ---- Update available
-            update?.let { u ->
-                item {
-                    SectionCard(color = MaterialTheme.colorScheme.tertiaryContainer) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconBadge(
-                                    Icons.Filled.Refresh,
-                                    MaterialTheme.colorScheme.tertiary,
-                                    MaterialTheme.colorScheme.onTertiary,
-                                )
-                                Spacer(Modifier.width(14.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        "Update available",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    )
-                                    Text(
-                                        "Version ${u.version} · you have $currentVersion",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    )
-                                }
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { openUrl(u.apkUrl) },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.tertiary,
-                                        contentColor = MaterialTheme.colorScheme.onTertiary,
-                                    ),
-                                ) { Text("Download") }
-                                TextButton(onClick = { openUrl(u.pageUrl) }) {
-                                    Text("What's new", color = MaterialTheme.colorScheme.onTertiaryContainer)
-                                }
-                                Spacer(Modifier.weight(1f))
-                                TextButton(onClick = { update = null }) {
-                                    Text("Later", color = MaterialTheme.colorScheme.onTertiaryContainer)
-                                }
-                            }
-                        }
-                    }
-                }
+            // ---- Update available (found by the automatic check)
+            update?.takeIf { !updateBelow }?.let { u ->
+                item { UpdateCard(u, currentVersion, ::openUrl) { update = null } }
             }
 
             // ---- Account
@@ -487,35 +469,7 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
             }
 
             // ---- Activity log
-            item {
-                SectionTitle("Activity", Modifier.padding(start = 4.dp, top = 8.dp))
-            }
-            if (job.lines.isEmpty()) {
-                item {
-                    Text(
-                        "Nothing yet. Progress appears here once you start.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 4.dp),
-                    )
-                }
-            } else {
-                item {
-                    SectionCard(color = MaterialTheme.colorScheme.surfaceContainerHighest) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            job.lines.takeLast(150).asReversed().forEach { line ->
-                                Text(
-                                    line,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.sp,
-                                    lineHeight = 16.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            item { ActivityCard(job.lines) }
 
             // ---- About & updates
             item {
@@ -526,7 +480,16 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             headlineContent = { Text("Version $currentVersion") },
                             supportingContent = {
-                                Text(if (update != null) "Version ${update!!.version} is available" else "Updates come from GitHub Releases")
+                                Text(
+                                    when {
+                                        checkingUpdate -> "Checking GitHub Releases…"
+                                        update != null -> "Version ${update!!.version} is available"
+                                        checkStatus != null -> checkStatus!!
+                                        else -> "Updates come from GitHub Releases"
+                                    },
+                                    color = if (checkStatus?.startsWith("✓") == true && update == null)
+                                        MaterialTheme.colorScheme.primary else Color.Unspecified,
+                                )
                             },
                             trailingContent = {
                                 if (checkingUpdate) {
@@ -542,6 +505,11 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
                         }
                     }
                 }
+            }
+
+            // ---- Result of a manual check, right under the Check button
+            update?.takeIf { updateBelow }?.let { u ->
+                item { UpdateCard(u, currentVersion, ::openUrl) { update = null; updateBelow = false } }
             }
         }
     }
@@ -658,4 +626,108 @@ private fun IconBadge(icon: ImageVector, bg: Color, fg: Color) {
         Modifier.size(44.dp).background(bg, CircleShape),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, null, tint = fg, modifier = Modifier.size(26.dp)) }
+}
+
+@Composable
+private fun UpdateCard(u: UpdateInfo, currentVersion: String, openUrl: (String) -> Unit, onLater: () -> Unit) {
+    SectionCard(color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconBadge(Icons.Filled.Refresh, MaterialTheme.colorScheme.tertiary, MaterialTheme.colorScheme.onTertiary)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Update available",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                    Text(
+                        "Version ${u.version} · you have $currentVersion",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { openUrl(u.apkUrl) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary,
+                        contentColor = MaterialTheme.colorScheme.onTertiary,
+                    ),
+                ) { Text("Download") }
+                TextButton(onClick = { openUrl(u.pageUrl) }) {
+                    Text("What's new", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onLater) {
+                    Text("Later", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                }
+            }
+        }
+    }
+}
+
+/** Collapsible activity log. Expanded, it shows at most 23 lines and scrolls inside itself. */
+@Composable
+private fun ActivityCard(lines: List<String>) {
+    var expanded by rememberSaveable { mutableStateOf(true) }
+    val lineHeight = 16.sp
+    val maxHeight = with(LocalDensity.current) { (lineHeight * 23).toDp() }
+    SectionCard(color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SectionTitle("Activity")
+                if (lines.isNotEmpty()) {
+                    Text(
+                        "  ${lines.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    if (expanded) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            val newestFirst = lines.asReversed()
+            when {
+                lines.isEmpty() -> Text(
+                    "Nothing yet. Progress appears here once you start.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+                )
+                !expanded -> LogLine(newestFirst.first(), maxLines = 1, modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp))
+                else -> Box(
+                    Modifier.fillMaxWidth().heightIn(max = maxHeight)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+                ) {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        newestFirst.forEach { LogLine(it) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LogLine(text: String, maxLines: Int = Int.MAX_VALUE, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        modifier = modifier,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
