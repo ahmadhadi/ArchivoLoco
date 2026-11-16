@@ -29,6 +29,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
     private val bridge = WebBridge(context)
     private val client = IgClient(context, bridge)
     private val guest = GuestClient()
+    private val mobile = MobileApi()
 
     /** Releases the hidden browser. Always called when a job ends. */
     suspend fun close() = bridge.close()
@@ -143,7 +144,15 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
                 else withBackoff("reels") { guest.reelsPage(userPk, username, after) }
             } catch (e: IOException) {
                 if (!useLogin && loggedIn) {
-                    log("Reels as guest refused (${e.message}); trying with your login…")
+                    log("Reels as guest refused (${e.message}); trying the app API with your login…")
+                    try {
+                        count += archiveReelsViaApp(userPk)
+                        log("Reels processed: $count")
+                        return
+                    } catch (e2: IOException) {
+                        if (e2 is SessionExpiredException) throw e2
+                        log("Reels (app API) failed: ${e2.message}; trying the website with your login…")
+                    }
                     useLogin = true
                     continue
                 }
@@ -170,6 +179,29 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             delay(opts.delayMs)
         }
         log("Reels processed: $count")
+    }
+
+    /** Reels tab through the app API (clips/user), paging by max_id. Returns reels seen. */
+    private suspend fun archiveReelsViaApp(userPk: String): Int {
+        var maxId: String? = null
+        var count = 0
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val (media, next) = mobile.clips(userPk, maxId)
+            if (count == 0 && media.isEmpty()) log("App API returned no reels")
+            try {
+                for (m in media) {
+                    count++
+                    handleGuestPost(m, label = "reel")
+                }
+            } catch (e: LimitedException) {
+                log("⏹ ${e.message} - skipping the remaining reels for now. Run again later to continue.")
+                return count
+            }
+            maxId = next ?: break
+            delay(opts.delayMs)
+        }
+        return count
     }
 
     /** Instagram kept limiting logged-out requests even after backing off. */
@@ -320,6 +352,15 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
                 emptyList()
             }
         }
+        if (reels.isEmpty()) {
+            reels = try {
+                mobile.highlightsTray(userPk).also { if (it.isNotEmpty()) log("Highlights list via app API") }
+            } catch (e: IOException) {
+                if (e is SessionExpiredException) throw e
+                log("Highlights list (app API) failed: ${e.message}")
+                emptyList()
+            }
+        }
         if (reels.isEmpty()) reels = runCatching { client.highlightReels(userPk, username) }.getOrDefault(emptyList())
         if (reels.isEmpty()) reels = runCatching { client.highlightIds(userPk).map { it to "" } }.getOrDefault(emptyList())
         if (reels.isEmpty()) {
@@ -327,7 +368,29 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             return
         }
         log("Highlights: ${reels.size}")
+        // Fast path: the app API returns up to 10 highlights' items per request.
+        val viaApp = HashSet<String>()
+        for (batch in reels.chunked(10)) {
+            currentCoroutineContext().ensureActive()
+            val got = try {
+                mobile.reelsMedia(batch.map { "highlight:${it.first}" })
+            } catch (e: IOException) {
+                if (e is SessionExpiredException) throw e
+                log("Highlight items (app API) failed: ${e.message}; trying other methods…")
+                break
+            }
+            for ((id, title) in batch) {
+                val items = got["highlight:$id"] ?: continue
+                val sub = highlightSub(title, id)
+                var n = 0
+                for (i in 0 until items.length()) items.optJSONObject(i)?.let { if (saveStoryItem(it, sub)) n++ }
+                log("✓ highlight \"${title.ifEmpty { id }}\": ${items.length()} items ($n new)")
+                viaApp += id
+            }
+            delay(opts.delayMs)
+        }
         for ((id, title) in reels) {
+            if (id in viaApp) continue
             currentCoroutineContext().ensureActive()
             val name = title.ifEmpty { id }
             val sub = highlightSub(title, id)
@@ -367,6 +430,17 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             -1
         }
         if (n > 0) return
+        try {
+            val items = mobile.reelsMedia(listOf(userPk))[userPk]
+            if (items != null && items.length() > 0) {
+                var saved = 0
+                for (i in 0 until items.length()) items.optJSONObject(i)?.let { if (saveStoryItem(it, "stories")) saved++ }
+                log("Current stories via app API: ${items.length()} ($saved new)")
+                return
+            }
+        } catch (e: IOException) {
+            if (e is SessionExpiredException) throw e
+        }
         try {
             val items = client.storyItems(userPk, isHighlight = false, username)
             var saved = 0

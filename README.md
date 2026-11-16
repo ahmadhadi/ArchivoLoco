@@ -22,8 +22,8 @@ comments, saved posts and private profiles you follow.
 
 Options: include comments, include reply comments (slow), re-download everything (ignore history).
 
-**Reels.** The profile's Reels tab is archived too (guest first, falling back to your login if
-Instagram requires it). With a login plus *Include comments* / *Include replies*, posts and reels get
+**Reels.** The profile's Reels tab is archived too (guest first; with a login, through Instagram's
+app API like instaloader, then the website). With a login plus *Include comments* / *Include replies*, posts and reels get
 their full comment threads, and re-running an archive fills in comments for posts saved earlier.
 
 **Offline library.** Everything you archive can be browsed in the app without internet, laid out
