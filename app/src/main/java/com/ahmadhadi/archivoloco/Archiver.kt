@@ -105,6 +105,10 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             log("Fetching posts…")
             archiveTimelineGuest(username, pageId, user.optJSONObject("polaris_ordered_timeline_connection"))
         }
+
+        // 4. Reels tab (reels that also appear in the grid are already saved and get skipped).
+        log("Fetching reels…")
+        archiveReelsTab(userPk, username, loggedIn)
         writeFailed()
     }
 
@@ -121,15 +125,60 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             if (pi == null || !pi.optBoolean("has_next_page")) break
             val cursor = pi.optString("end_cursor").takeIf { it.isNotEmpty() } ?: break
             delay(opts.delayMs)
-            conn = guest.postsPage(pageId, username, cursor) ?: run {
-                log("⚠ Instagram stopped returning more posts (try again later to continue)")
-                return
+            conn = try {
+                guest.postsPage(pageId, username, cursor) ?: break
+            } catch (e: IOException) {
+                log("⚠ ${e.message} - retrying in 15s")
+                delay(15_000)
+                try {
+                    guest.postsPage(pageId, username, cursor) ?: break
+                } catch (e2: IOException) {
+                    log("⚠ Stopped fetching posts: ${e2.message}. Run again later to continue.")
+                    return
+                }
             }
         }
     }
 
+    /** The profile's Reels tab (instaloader Profile.get_reels): guest first, then the login session. */
+    private suspend fun archiveReelsTab(userPk: String, username: String, loggedIn: Boolean) {
+        var useLogin = false
+        var after: String? = null
+        var count = 0
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val conn = try {
+                if (useLogin) client.reelsPage(userPk, username, after)
+                    ?: throw IgException("Reels query refused for this session")
+                else guest.reelsPage(userPk, username, after)
+            } catch (e: IOException) {
+                if (!useLogin && loggedIn) {
+                    log("Reels as guest refused (${e.message}); trying with your login…")
+                    useLogin = true
+                    continue
+                }
+                log(
+                    "⚠ Reels skipped: ${e.message}" +
+                        if (!loggedIn) " - Instagram may require a login for the Reels tab." else "",
+                )
+                break
+            }
+            val edges = conn.optJSONArray("edges") ?: JSONArray()
+            for (i in 0 until edges.length()) {
+                val media = edges.optJSONObject(i)?.optJSONObject("node")?.optJSONObject("media") ?: continue
+                count++
+                handleGuestPost(media, label = "reel")
+            }
+            val pi = conn.optJSONObject("page_info")
+            if (pi == null || !pi.optBoolean("has_next_page")) break
+            after = pi.optString("end_cursor").takeIf { it.isNotEmpty() } ?: break
+            delay(opts.delayMs)
+        }
+        log("Reels processed: $count")
+    }
+
     /** One public post: full media via the logged-out post query, saved like handleMedia. */
-    private suspend fun handleGuestPost(node: JSONObject) {
+    private suspend fun handleGuestPost(node: JSONObject, label: String = "post") {
         currentCoroutineContext().ensureActive()
         val code = node.optString("code").takeIf { it.isNotEmpty() && it.all { c -> c.isLetterOrDigit() || c == '_' || c == '-' } }
             ?: return
@@ -137,6 +186,16 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
         val key = "${IgConstants.BASE}/p/$code/"
         if (dedup.isSaved(key)) {
             JobBus.stats { it.copy(skipped = it.skipped + 1) }
+            // Already archived: only fill in comments if they were asked for and are missing.
+            if (opts.comments && Session.isLoggedIn()) {
+                val pk = node.optString("pk").ifEmpty { node.optString("id").substringBefore('_') }
+                val id = safeFileName(node.optString("id").ifEmpty { pk })
+                if (pk.isNotEmpty() && pk.all { it.isDigit() } && !out.exists(null, "$id-comments.json")) {
+                    saveComments(pk, id, code)
+                    log("✓ comments for $label $code")
+                    delay(opts.delayMs)
+                }
+            }
             return
         }
         try {
@@ -166,10 +225,10 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
                 }
             }
             dedup.save(key)
-            log("✓ $code")
+            log("✓ $label $code")
             delay(opts.delayMs)
         } catch (e: IOException) {
-            log("✖ $key: ${e.message}")
+            log("✖ $label $key: ${e.message}")
             failedUrls += key
             JobBus.stats { it.copy(failed = it.failed + 1) }
             if ("rate-limiting" in e.message.orEmpty() || "asking for a login" in e.message.orEmpty()) throw e

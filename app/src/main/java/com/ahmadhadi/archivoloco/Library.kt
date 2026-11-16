@@ -38,6 +38,7 @@ data class ArchivedPost(
     val location: String?,
     val media: List<Media>,
     val comments: List<Comment>?,   // null = not archived
+    val isReel: Boolean,
 )
 
 data class ArchivedProfile(
@@ -116,7 +117,8 @@ object Library {
         val posts = root.filter { it.name.endsWith("-media-info-0000.json") }.mapNotNull { f ->
             val info = readJson(ctx, f.uri) ?: return@mapNotNull null
             val id = f.name.removeSuffix("-media-info-0000.json")
-            val commentsJson = byName["$id-comments.json"]?.let { readJson(ctx, it.uri) }
+            val commentsJson = (byName["$id-comments.json"] ?: byName["${id.substringBefore('_')}-comments.json"])
+                ?.let { readJson(ctx, it.uri) }
             parsePost(id, info, mediaById, commentsJson)
         }.sortedByDescending { it.takenAt }
 
@@ -160,7 +162,7 @@ object Library {
             val file = mediaById[safeFileName(child.optString("id").ifEmpty { child.optString("pk") })] ?: return@mapNotNull null
             Media(file.uri, file.mime.startsWith("video/"), child.optInt("original_width"), child.optInt("original_height"))
         }
-        if (media.isEmpty()) return null
+        // Posts whose media failed to download are kept (shown with a placeholder) so counts add up.
 
         val comments = commentsJson?.optJSONArray("comments")?.let(::parseComments)
             ?: item.optJSONArray("preview_comments")?.takeIf { it.length() > 0 }?.let(::parseComments)
@@ -175,6 +177,7 @@ object Library {
             location = item.optJSONObject("location")?.optString("name")?.takeIf { it.isNotEmpty() },
             media = media,
             comments = comments,
+            isReel = item.optString("product_type") == "clips",
         )
     }
 

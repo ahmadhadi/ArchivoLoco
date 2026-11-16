@@ -6,6 +6,12 @@ import android.net.Uri
 import android.os.Bundle
 import android.text.format.DateUtils
 import android.widget.VideoView
+import android.widget.Toast
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Tab
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -109,7 +115,7 @@ class LibraryActivity : ComponentActivity() {
 private sealed interface Screen {
     data object Home : Screen
     data class Profile(val folder: String) : Screen
-    data class Feed(val folder: String, val index: Int) : Screen
+    data class Feed(val folder: String, val index: Int, val reels: Boolean = false) : Screen
     data class Gallery(val folder: String, val title: String, val index: Int) : Screen
 }
 
@@ -120,6 +126,7 @@ private fun LibraryApp(startFolder: String?, onExit: () -> Unit) {
         mutableStateOf(listOfNotNull<Screen>(Screen.Home, startFolder?.let { Screen.Profile(it) }))
     }
     var profile by remember { mutableStateOf<ArchivedProfile?>(null) }
+    var reloadKey by remember { mutableStateOf(0) }
     fun push(s: Screen) { stack = stack + s }
     fun pop() { if (stack.size > 1) stack = stack.dropLast(1) else onExit() }
     BackHandler { pop() }
@@ -128,9 +135,9 @@ private fun LibraryApp(startFolder: String?, onExit: () -> Unit) {
     val folder = (stack.last() as? Screen.Profile)?.folder
         ?: (stack.last() as? Screen.Feed)?.folder
         ?: (stack.last() as? Screen.Gallery)?.folder
-    LaunchedEffect(folder) {
-        if (folder != null && profile?.folder != folder) {
-            profile = null
+    LaunchedEffect(folder, reloadKey) {
+        if (folder != null && (profile?.folder != folder || reloadKey > 0)) {
+            if (profile?.folder != folder) profile = null
             profile = Library.load(ctx, folder)
         }
     }
@@ -141,11 +148,12 @@ private fun LibraryApp(startFolder: String?, onExit: () -> Unit) {
             profile = profile?.takeIf { it.folder == s.folder },
             title = s.folder,
             onBack = ::pop,
-            onOpenPost = { push(Screen.Feed(s.folder, it)) },
+            onOpenPost = { index, reels -> push(Screen.Feed(s.folder, index, reels)) },
             onOpenGallery = { title -> push(Screen.Gallery(s.folder, title, 0)) },
+            onRefresh = { reloadKey++ },
         )
         is Screen.Feed -> profile?.takeIf { it.folder == s.folder }?.let {
-            FeedScreen(it, s.index, onBack = ::pop)
+            FeedScreen(it, if (s.reels) it.posts.filter { p -> p.isReel } else it.posts, s.index, onBack = ::pop)
         }
         is Screen.Gallery -> profile?.takeIf { it.folder == s.folder }?.let { p ->
             val media = if (s.title == "Stories") p.stories else p.highlights
@@ -193,46 +201,105 @@ private fun ProfileScreen(
     profile: ArchivedProfile?,
     title: String,
     onBack: () -> Unit,
-    onOpenPost: (Int) -> Unit,
+    onOpenPost: (index: Int, reels: Boolean) -> Unit,
     onOpenGallery: (String) -> Unit,
+    onRefresh: () -> Unit,
 ) {
-    Scaffold(topBar = { BackBar(profile?.username ?: title, onBack) }) { pad ->
+    val ctx = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var tab by remember { mutableStateOf(0) }
+    val username = profile?.username ?: title
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(username, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                actions = {
+                    IconButton(onClick = {
+                        clipboard.setText(AnnotatedString(username))
+                        Toast.makeText(ctx, "Copied @$username", Toast.LENGTH_SHORT).show()
+                    }) { Icon(CopyIcon, "Copy username") }
+                    IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "Refresh") }
+                },
+            )
+        },
+    ) { pad ->
         if (profile == null) {
             Centered(pad) { Text("Loading archive…") }
             return@Scaffold
         }
+        val reels = profile.posts.filter { it.isReel }
+        val shown = if (tab == 1) reels else profile.posts
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),
             contentPadding = PaddingValues(top = pad.calculateTopPadding(), bottom = pad.calculateBottomPadding() + 16.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            item(span = { GridItemSpan(3) }) { ProfileHeader(profile, onOpenGallery) }
-            if (profile.posts.isEmpty()) {
+            item(span = { GridItemSpan(3) }) {
+                Column {
+                    ProfileHeader(profile, onOpenGallery) {
+                        clipboard.setText(AnnotatedString(username))
+                        Toast.makeText(ctx, "Copied @$username", Toast.LENGTH_SHORT).show()
+                    }
+                    PrimaryTabRow(selectedTabIndex = tab) {
+                        Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Posts · ${profile.posts.size}") })
+                        Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Reels · ${reels.size}") })
+                    }
+                    Spacer(Modifier.height(2.dp))
+                }
+            }
+            if (shown.isEmpty()) {
                 item(span = { GridItemSpan(3) }) {
                     Text(
-                        "No posts in this archive yet.",
+                        if (tab == 1) "No reels in this archive yet." else "No posts in this archive yet.",
                         modifier = Modifier.padding(32.dp),
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            itemsIndexed(profile.posts, key = { _, p -> p.id }) { i, post ->
-                Box(Modifier.aspectRatio(1f).clickable { onOpenPost(i) }) {
-                    AsyncImage(
-                        model = post.media.first().uri,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest),
-                    )
+            itemsIndexed(shown, key = { _, p -> p.id }) { i, post ->
+                Box(
+                    Modifier.aspectRatio(if (tab == 1) 9f / 16f else 1f)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                        .clickable { onOpenPost(i, tab == 1) },
+                ) {
+                    val first = post.media.firstOrNull()
+                    if (first == null) {
+                        Text(
+                            "Media\nmissing",
+                            modifier = Modifier.align(Alignment.Center),
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        AsyncImage(
+                            model = first.uri,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                     val badge = when {
                         post.media.size > 1 -> CarouselIcon
-                        post.media.first().isVideo -> Icons.Filled.PlayArrow
+                        first?.isVideo == true -> Icons.Filled.PlayArrow
                         else -> null
                     }
                     badge?.let {
                         Icon(it, null, tint = Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(18.dp))
+                    }
+                    if (tab == 1) {
+                        post.views?.let { v ->
+                            Text(
+                                "▶ ${compact(v)}",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -241,7 +308,7 @@ private fun ProfileScreen(
 }
 
 @Composable
-private fun ProfileHeader(p: ArchivedProfile, onOpenGallery: (String) -> Unit) {
+private fun ProfileHeader(p: ArchivedProfile, onOpenGallery: (String) -> Unit, onCopy: () -> Unit) {
     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Avatar(p.picture, 84.dp)
@@ -250,7 +317,17 @@ private fun ProfileHeader(p: ArchivedProfile, onOpenGallery: (String) -> Unit) {
             Stat(p.followers?.let(::compact) ?: "–", "followers", Modifier.weight(1f))
             Stat(p.following?.let(::compact) ?: "–", "following", Modifier.weight(1f))
         }
-        if (p.fullName.isNotEmpty()) Text(p.fullName, fontWeight = FontWeight.SemiBold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                if (p.fullName.isNotEmpty()) Text(p.fullName, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "@${p.username}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onCopy) { Icon(CopyIcon, "Copy username", Modifier.size(20.dp)) }
+        }
         if (p.bio.isNotEmpty()) Text(p.bio, style = MaterialTheme.typography.bodyMedium)
         p.postCountOnInstagram?.let {
             Text(
@@ -266,7 +343,6 @@ private fun ProfileHeader(p: ArchivedProfile, onOpenGallery: (String) -> Unit) {
             }
         }
     }
-    HorizontalDivider()
 }
 
 @Composable
@@ -280,12 +356,12 @@ private fun Stat(value: String, label: String, modifier: Modifier) {
 // ------------------------------------------------------------------ Feed + post
 
 @Composable
-private fun FeedScreen(profile: ArchivedProfile, startIndex: Int, onBack: () -> Unit) {
+private fun FeedScreen(profile: ArchivedProfile, posts: List<ArchivedPost>, startIndex: Int, onBack: () -> Unit) {
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = startIndex)
     var commentsFor by remember { mutableStateOf<ArchivedPost?>(null) }
     Scaffold(topBar = { BackBar("Posts", onBack) }) { pad ->
         LazyColumn(state = listState, contentPadding = pad) {
-            itemsIndexed(profile.posts, key = { _, p -> p.id }) { _, post ->
+            itemsIndexed(posts, key = { _, p -> p.id }) { _, post ->
                 PostCard(profile, post, onComments = { commentsFor = post })
                 Spacer(Modifier.height(12.dp))
             }
@@ -372,6 +448,19 @@ private fun CommentLine(username: String, text: String) {
 
 @Composable
 private fun MediaPager(media: List<Media>) {
+    if (media.isEmpty()) {
+        Box(
+            Modifier.fillMaxWidth().aspectRatio(1f).background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "This post's media wasn't downloaded.\nArchive the profile again to retry.",
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
     val first = media.first()
     // Instagram crops feed media between 4:5 portrait and 1.91:1 landscape.
     val ratio = if (first.width > 0 && first.height > 0) {
@@ -575,5 +664,17 @@ private val CarouselIcon: ImageVector = ImageVector.Builder("carousel", 24.dp, 2
         moveTo(8f, 3f); horizontalLineTo(21f); verticalLineTo(16f); horizontalLineTo(19f)
         verticalLineTo(5f); horizontalLineTo(8f); close()
         moveTo(3f, 8f); horizontalLineTo(16f); verticalLineTo(21f); horizontalLineTo(3f); close()
+    }
+}.build()
+
+/** Two overlapping rounded sheets - a "copy" glyph (drawn here; the core icon set has none). */
+private val CopyIcon: ImageVector = ImageVector.Builder("copy", 24.dp, 24.dp, 24f, 24f).apply {
+    path(fill = SolidColor(Color.Black)) {
+        moveTo(16f, 1f); horizontalLineTo(4f); curveTo(2.9f, 1f, 2f, 1.9f, 2f, 3f); verticalLineTo(17f)
+        horizontalLineTo(4f); verticalLineTo(3f); horizontalLineTo(16f); close()
+        moveTo(19f, 5f); horizontalLineTo(8f); curveTo(6.9f, 5f, 6f, 5.9f, 6f, 7f); verticalLineTo(21f)
+        curveTo(6f, 22.1f, 6.9f, 23f, 8f, 23f); horizontalLineTo(19f); curveTo(20.1f, 23f, 21f, 22.1f, 21f, 21f)
+        verticalLineTo(7f); curveTo(21f, 5.9f, 20.1f, 5f, 19f, 5f); close()
+        moveTo(19f, 21f); horizontalLineTo(8f); verticalLineTo(7f); horizontalLineTo(19f); close()
     }
 }.build()

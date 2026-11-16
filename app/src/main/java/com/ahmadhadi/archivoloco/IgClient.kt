@@ -169,6 +169,13 @@ class IgClient(context: Context, private val bridge: WebBridge) {
             ?.optJSONObject("xdt_api__v1__feed__user_timeline_graphql_connection")
     }
 
+    /** Reels tab via the logged-in browser session (fallback when the guest query is refused). */
+    suspend fun reelsPage(userPk: String, username: String, after: String?): JSONObject? =
+        graphql(
+            GuestClient.reelsVariables(userPk, after), GuestClient.REELS_DOC_ID,
+            referrer = "${IgConstants.BASE}/$username/",
+        )?.optJSONObject("xdt_api__v1__clips__user__connection_v2")
+
     /** Returns the media info JSON, or null if Instagram didn't return usable data. */
     suspend fun mediaInfo(pk: String): JSONObject? {
         val info = getJson("${IgConstants.BASE}/api/v1/media/$pk/info/")

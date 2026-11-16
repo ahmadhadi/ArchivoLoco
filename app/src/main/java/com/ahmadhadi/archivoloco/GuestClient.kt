@@ -24,13 +24,25 @@ import java.util.concurrent.TimeUnit
  * shared HostPolicy allowlist applies to every request.
  */
 class GuestClient {
-    private companion object {
+    companion object {
         // Same plain desktop identity instaloader uses. No client-hint headers are sent, so there's
         // nothing for Instagram to find inconsistent.
         const val UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
             "Chrome/142.0.0.0 Safari/537.36"
         const val PROFILE_POSTS_DOC_ID = "28904005159232689" // PolarisLoggedOutDesktopWWWProfilePostsTabContentQuery
         const val POST_DOC_ID = "27128499623469141" // media shortcode web_info
+        const val REELS_DOC_ID = "7845543455542541" // PolarisProfileReelsTabContentQuery_connection
+
+        fun reelsVariables(userPk: String, after: String?): JSONObject {
+            val vars = JSONObject().put(
+                "data",
+                JSONObject().put("page_size", 12).put("include_feed_video", true).put("target_user_id", userPk),
+            )
+            if (after != null) {
+                vars.put("after", after).put("before", JSONObject.NULL).put("first", 12).put("last", JSONObject.NULL)
+            }
+            return vars
+        }
         val SCRIPT_JSON = Regex("""<script type="application/json"[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
     }
 
@@ -178,8 +190,54 @@ class GuestClient {
             .put("__relay_internal__pv__PolarisSEOIsCrawlerrelayprovider", false)
             .put("after", after).put("before", JSONObject.NULL)
             .put("first", 12).put("last", JSONObject.NULL)
-        return webGraphql(PROFILE_POSTS_DOC_ID, vars, "${IgConstants.BASE}/$username/")
-            .optJSONObject("data")?.optJSONObject("node")?.optJSONObject("polaris_ordered_timeline_connection")
+        val resp = webGraphql(PROFILE_POSTS_DOC_ID, vars, "${IgConstants.BASE}/$username/")
+        return resp.optJSONObject("data")?.optJSONObject("node")?.optJSONObject("polaris_ordered_timeline_connection")
+            ?: throw IgException("Instagram didn't return more posts: ${describe(resp)}")
+    }
+
+    /** Short, log-friendly description of an unexpected GraphQL response. */
+    private fun describe(resp: JSONObject): String {
+        resp.optJSONArray("errors")?.optJSONObject(0)?.let { e ->
+            return (e.optString("summary").ifEmpty { e.optString("message") }).take(140).ifEmpty { "error" }
+        }
+        resp.optString("message").takeIf { it.isNotEmpty() }?.let { return it.take(140) }
+        return "keys=" + resp.keys().asSequence().toList().joinToString(",").take(140)
+    }
+
+    /**
+     * The classic graphql/query endpoint, as instaloader uses for reels
+     * (PolarisProfileReelsTabContentQuery).
+     */
+    private suspend fun graphqlQuery(docId: String, variables: JSONObject, referer: String): JSONObject {
+        ensureTokens() // also obtains the csrftoken cookie
+        val form = FormBody.Builder()
+            .add("variables", variables.toString())
+            .add("doc_id", docId)
+            .add("server_timestamps", "true")
+            .build()
+        val req = Request.Builder()
+            .url("${IgConstants.BASE}/graphql/query")
+            .post(form)
+            .header("user-agent", UA)
+            .header("accept", "*/*")
+            .header("accept-language", "en-US,en;q=0.8")
+            .header("referer", referer)
+            .header("x-ig-app-id", "936619743392459")
+            .header("x-csrftoken", jar.get("csrftoken").orEmpty())
+            .build()
+        val (code, body) = execute(req)
+        if (code == 429) throw IgException("Instagram is rate-limiting (HTTP 429). Wait a while and retry.")
+        if (code != 200) throw IgException("HTTP $code from Instagram's GraphQL")
+        val json = body.removePrefix("for (;;);").trim()
+        if (!json.startsWith("{")) throw IgException("Instagram sent a web page instead of data")
+        return JSONObject(json)
+    }
+
+    /** One page of a profile's Reels tab. Edges are {node: {media: {code, ...}}}. */
+    suspend fun reelsPage(userPk: String, username: String, after: String?): JSONObject {
+        val resp = graphqlQuery(REELS_DOC_ID, reelsVariables(userPk, after), "${IgConstants.BASE}/$username/")
+        return resp.optJSONObject("data")?.optJSONObject("xdt_api__v1__clips__user__connection_v2")
+            ?: throw IgException("Reels query refused: ${describe(resp)}")
     }
 
     /**
