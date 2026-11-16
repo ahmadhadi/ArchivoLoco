@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="ArchivoLoco icon"></p>
+
 # ArchivoLoco
 
 Android app that saves Instagram content you have access to — an on-device port of

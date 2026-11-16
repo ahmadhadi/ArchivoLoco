@@ -1,5 +1,5 @@
 <resources>
-    <color name="ic_bg">#1B1026</color>
+    <color name="ic_bg">#122649</color>
 
     <!-- Compose draws everything; this only sets the window before the first frame. -->
     <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
