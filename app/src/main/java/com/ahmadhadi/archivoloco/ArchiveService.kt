@@ -16,6 +16,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -64,9 +65,12 @@ class ArchiveService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
 
         JobBus.start(title)
+        // Progress notifications. Runs on the main thread, like the final notification below, so a
+        // late progress update can never land after (and overwrite) the "Done" notification.
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
         val updater = scope.launch {
             JobBus.state.collectLatest { s ->
-                if (s.running) notify(buildNotification(title, s.stats.summary(), ongoing = true))
+                if (s.running && !finished.get()) notify(buildNotification(title, s.stats.summary(), ongoing = true))
             }
         }
         // The whole job runs off the main thread (network, files, database).
@@ -85,17 +89,20 @@ class ArchiveService : Service() {
             } catch (e: Exception) {
                 outcome = "Error: ${e.message ?: e.javaClass.simpleName}"
             }
+            finished.set(true)
             JobBus.log("■ $outcome — ${JobBus.state.value.stats.summary()}")
             JobBus.finish()
-            updater.cancel()
-            stopForeground(STOP_FOREGROUND_DETACH)
-            notify(
-                buildNotification(
-                    "$title: $outcome", JobBus.state.value.stats.summary(), ongoing = false,
-                    folder = if (saved) "saved" else username,
-                ),
-            )
-            stopSelf()
+            withContext(Dispatchers.Main + NonCancellable) {
+                updater.cancelAndJoin() // no more progress updates after this point
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                notify(
+                    buildNotification(
+                        "$title: $outcome", JobBus.state.value.stats.summary(), ongoing = false,
+                        folder = if (saved) "saved" else username,
+                    ),
+                )
+                stopSelf()
+            }
         }
         return START_NOT_STICKY
     }
