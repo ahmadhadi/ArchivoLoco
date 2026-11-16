@@ -10,6 +10,11 @@ via GitHub Actions. Enable "Install unknown apps" for your browser/file manager 
 
 ## What it does
 
+**No login needed for public profiles.** Like [instaloader](https://github.com/instaloader/instaloader)
+(4.16+), ArchivoLoco reads the profile's public page and pages through posts with the same anonymous
+queries Instagram's logged-out website uses. Logging in is optional and adds stories, highlights,
+comments, saved posts and private profiles you follow.
+
 | Mode | What gets saved |
 |---|---|
 | **Profile** | Profile info + HD profile picture, every post (all carousel images and videos), current stories, and highlights |

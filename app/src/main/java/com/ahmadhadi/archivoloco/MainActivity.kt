@@ -210,8 +210,8 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
 
     fun start() {
         keyboard?.hide()
-        if (!loggedIn) {
-            scope.launch { snackbar.showSnackbar("Log in to Instagram first") }
+        if (!loggedIn && savedMode) {
+            scope.launch { snackbar.showSnackbar("Saved posts need a login") }
             return
         }
         val user = if (savedMode) null else parseUsername(username)
@@ -257,7 +257,7 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
         ) {
             item {
                 Text(
-                    "Back up Instagram content you have access to.",
+                    "Back up public Instagram profiles - no login needed.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
@@ -326,7 +326,12 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
                             )
                         },
                         headlineContent = { Text("Instagram account", fontWeight = FontWeight.Medium) },
-                        supportingContent = { Text(if (loggedIn) "Connected" else "Not connected") },
+                        supportingContent = {
+                            Text(
+                                if (loggedIn) "Connected · stories, highlights, comments & saved enabled"
+                                else "Optional · public profiles work without it",
+                            )
+                        },
                         trailingContent = {
                             if (loggedIn) {
                                 TextButton(onClick = { confirmLogout = true }) { Text("Log out") }
@@ -407,7 +412,7 @@ private fun MainScreen(sharedUsername: String?, onSharedConsumed: () -> Unit, lo
                 SectionCard {
                     Column(Modifier.padding(vertical = 8.dp)) {
                         SectionTitle("Options", Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-                        OptionRow("Include comments", "Saves a comments file per post", comments) {
+                        OptionRow("Include comments", if (loggedIn) "Saves a comments file per post" else "Needs a login", comments) {
                             comments = it
                             if (!it) replies = false
                         }

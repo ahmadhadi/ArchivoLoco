@@ -18,7 +18,7 @@ data class ArchiveOptions(
     val unsave: Boolean = false,
     val redownload: Boolean = false,
     /** Polite pause between posts, like the Python tool's one-request-at-a-time workers. */
-    val delayMs: Long = 800,
+    val delayMs: Long = 1500,
 )
 
 /**
@@ -28,6 +28,7 @@ data class ArchiveOptions(
 class Archiver(private val context: Context, private val opts: ArchiveOptions) {
     private val bridge = WebBridge(context)
     private val client = IgClient(context, bridge)
+    private val guest = GuestClient()
 
     /** Releases the hidden browser. Always called when a job ends. */
     suspend fun close() = bridge.close()
@@ -55,60 +56,137 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
 
     suspend fun archiveProfile(username: String) {
         open(username)
-        requireLogin()
-        log("Opening profile @$username")
-        client.getPage("${IgConstants.BASE}/$username/")
+        val loggedIn = Session.isLoggedIn()
+        log("Opening profile @$username" + if (loggedIn) "" else " (guest mode, no login)")
 
-        val user = try {
-            client.webProfileInfo(username)
-        } catch (e: IgException) {
-            // Instagram answers 404 when no account has this exact username.
-            if (e.message.orEmpty().startsWith("HTTP 404")) {
-                throw IgException("Instagram couldn't find @$username. ${e.message}")
-            }
-            log("⚠ Could not get profile info: ${e.message}")
-            null
-        } catch (e: IOException) {
-            if (e is SessionExpiredException) throw e
-            log("⚠ Could not get profile info: ${e.message}")
-            null
-        }
-        if (user != null) {
-            out.writeText(null, "web_profile_info.json", user.toString(2), overwrite = true)
-            user.optString("profile_pic_url_hd").takeIf { it.isNotEmpty() }?.let {
-                download(it, null, "profile_pic", null)
-            }
-            val userId = user.getString("id")
-            val count = user.optJSONObject("edge_owner_to_timeline_media")?.optInt("count") ?: -1
-            log("Profile has $count posts" + if (user.optBoolean("is_private")) " (private)" else "")
-
+        // 1. Profile from its public page (instaloader's approach; works with or without login).
+        val user = guest.profile(username)
+        out.writeText(null, "profile.json", user.toString(2), overwrite = true)
+        val pic = user.optJSONObject("hd_profile_pic_url_info")?.optString("url")?.takeIf { it.isNotEmpty() }
+            ?: user.optString("profile_pic_url").takeIf { it.isNotEmpty() }
+        pic?.let {
             try {
-                val ids = client.highlightIds(userId)
+                download(it, null, "profile_pic", null)
+            } catch (e: IOException) {
+                log("⚠ Profile picture: ${e.message}")
+            }
+        }
+        val userPk = user.getString("pk")
+        val pageId = user.optString("id")
+        val isPrivate = user.optBoolean("is_private")
+        val total = user.optJSONObject("polaris_ordered_timeline_connection")?.optInt("count", -1) ?: -1
+        log("Profile found" + (if (total >= 0) ", $total posts" else "") + if (isPrivate) " (private)" else "")
+
+        // 2. Stories and highlights need a login.
+        if (loggedIn) {
+            try {
+                val ids = client.highlightIds(userPk)
                 log("Highlights: ${ids.size}")
                 if (ids.isNotEmpty()) archiveReels(ids, isHighlight = true, sub = "highlights")
             } catch (e: IOException) {
-                if (e is SessionExpiredException) throw e
-                log("⚠ Failed to get highlights: ${e.message}")
+                log("⚠ Highlights skipped: ${e.message}")
             }
             try {
-                archiveReels(listOf(userId), isHighlight = false, sub = "stories")
+                archiveReels(listOf(userPk), isHighlight = false, sub = "stories")
             } catch (e: IOException) {
-                if (e is SessionExpiredException) throw e
-                log("⚠ Failed to get current stories: ${e.message}")
+                log("⚠ Stories skipped: ${e.message}")
             }
         } else {
-            log("⚠ Profile info and picture will not be saved.")
+            log("Stories and highlights need a login - skipped")
+            if (opts.comments) log("Comments need a login - skipped")
         }
 
-        log("Fetching posts…")
-        var conn = client.timelinePage(username, null)
-        if (conn == null) {
-            log("✖ Timeline query failed (private account you don't follow, or blocked).")
-            return
+        // 3. Posts.
+        if (isPrivate) {
+            if (!loggedIn) throw IgException("@$username is private. Log in with an account that follows it.")
+            log("Private profile - fetching posts with your login…")
+            archiveTimelineLoggedIn(username)
+        } else {
+            log("Fetching posts…")
+            archiveTimelineGuest(username, pageId, user.optJSONObject("polaris_ordered_timeline_connection"))
         }
+        writeFailed()
+    }
+
+    /** Public posts via the logged-out web app's queries (instaloader Profile.get_posts). */
+    private suspend fun archiveTimelineGuest(username: String, pageId: String, first: JSONObject?) {
+        var conn = first ?: throw IgException("The profile page didn't include its posts.")
         while (true) {
             currentCoroutineContext().ensureActive()
-            val edges = conn!!.optJSONArray("edges") ?: JSONArray()
+            val edges = conn.optJSONArray("edges") ?: JSONArray()
+            for (i in 0 until edges.length()) {
+                edges.optJSONObject(i)?.optJSONObject("node")?.let { handleGuestPost(it) }
+            }
+            val pi = conn.optJSONObject("page_info")
+            if (pi == null || !pi.optBoolean("has_next_page")) break
+            val cursor = pi.optString("end_cursor").takeIf { it.isNotEmpty() } ?: break
+            delay(opts.delayMs)
+            conn = guest.postsPage(pageId, username, cursor) ?: run {
+                log("⚠ Instagram stopped returning more posts (try again later to continue)")
+                return
+            }
+        }
+    }
+
+    /** One public post: full media via the logged-out post query, saved like handleMedia. */
+    private suspend fun handleGuestPost(node: JSONObject) {
+        currentCoroutineContext().ensureActive()
+        val code = node.optString("code").takeIf { it.isNotEmpty() && it.all { c -> c.isLetterOrDigit() || c == '_' || c == '-' } }
+            ?: return
+        JobBus.stats { it.copy(posts = it.posts + 1) }
+        val key = "${IgConstants.BASE}/p/$code/"
+        if (dedup.isSaved(key)) {
+            JobBus.stats { it.copy(skipped = it.skipped + 1) }
+            return
+        }
+        try {
+            val info = guest.post(code) ?: run {
+                log("⚠ No media data for $key")
+                failedUrls += key
+                JobBus.stats { it.copy(failed = it.failed + 1) }
+                return
+            }
+            val items = info.getJSONArray("items")
+            val first = items.getJSONObject(0)
+            val id = safeFileName(first.optString("id").ifEmpty { code })
+            val takenAt = first.optLong("taken_at")
+            out.writeText(null, "$id.json", node.toString(2), takenAtSec = takenAt)
+            out.writeText(null, "$id-media-info-0000.json", info.toString(2), takenAtSec = takenAt)
+            if (opts.comments && Session.isLoggedIn()) {
+                first.optString("pk").takeIf { it.isNotEmpty() }?.let { saveComments(it, id, code) }
+            }
+            for (i in 0 until items.length()) {
+                val item = items.getJSONObject(i)
+                val ts = item.optLong("taken_at", takenAt)
+                val carousel = item.optJSONArray("carousel_media")
+                if (carousel != null && carousel.length() > 0) {
+                    for (j in 0 until carousel.length()) saveItem(carousel.getJSONObject(j), null, ts)
+                } else {
+                    saveItem(item, null, ts)
+                }
+            }
+            dedup.save(key)
+            log("✓ $code")
+            delay(opts.delayMs)
+        } catch (e: IOException) {
+            log("✖ $key: ${e.message}")
+            failedUrls += key
+            JobBus.stats { it.copy(failed = it.failed + 1) }
+            if ("rate-limiting" in e.message.orEmpty() || "asking for a login" in e.message.orEmpty()) throw e
+        } catch (e: JSONException) {
+            log("✖ $key: unexpected response (${e.message})")
+            failedUrls += key
+            JobBus.stats { it.copy(failed = it.failed + 1) }
+        }
+    }
+
+    /** Logged-in timeline (private profiles you follow), via the in-app browser session. */
+    private suspend fun archiveTimelineLoggedIn(username: String) {
+        var conn = client.timelinePage(username, null)
+            ?: throw IgException("Instagram refused the posts query for this private profile.")
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val edges = conn.optJSONArray("edges") ?: JSONArray()
             for (i in 0 until edges.length()) {
                 edges.optJSONObject(i)?.optJSONObject("node")?.let { handleMedia(it) }
             }
@@ -116,7 +194,6 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             if (pi == null || !pi.optBoolean("has_next_page")) break
             conn = client.timelinePage(username, pi.optString("end_cursor")) ?: break
         }
-        writeFailed()
     }
 
     /** Port of ProfileScraper._dispatch_reel + save_reel_item. */
