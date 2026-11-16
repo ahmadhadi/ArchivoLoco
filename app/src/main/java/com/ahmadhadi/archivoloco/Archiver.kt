@@ -60,7 +60,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
         log("Opening profile @$username" + if (loggedIn) "" else " (guest mode, no login)")
 
         // 1. Profile from its public page (instaloader's approach; works with or without login).
-        val user = guest.profile(username)
+        val user = withBackoff("profile page") { guest.profile(username) }
         out.writeText(null, "profile.json", user.toString(2), overwrite = true)
         val pic = user.optJSONObject("hd_profile_pic_url_info")?.optString("url")?.takeIf { it.isNotEmpty() }
             ?: user.optString("profile_pic_url").takeIf { it.isNotEmpty() }
@@ -118,24 +118,23 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
         while (true) {
             currentCoroutineContext().ensureActive()
             val edges = conn.optJSONArray("edges") ?: JSONArray()
-            for (i in 0 until edges.length()) {
-                edges.optJSONObject(i)?.optJSONObject("node")?.let { handleGuestPost(it) }
+            try {
+                for (i in 0 until edges.length()) {
+                    edges.optJSONObject(i)?.optJSONObject("node")?.let { handleGuestPost(it) }
+                }
+            } catch (e: LimitedException) {
+                log("⏹ ${e.message} - skipping the remaining posts for now. Run again later to continue.")
+                return
             }
             val pi = conn.optJSONObject("page_info")
             if (pi == null || !pi.optBoolean("has_next_page")) break
             val cursor = pi.optString("end_cursor").takeIf { it.isNotEmpty() } ?: break
             delay(opts.delayMs)
             conn = try {
-                guest.postsPage(pageId, username, cursor) ?: break
+                withBackoff("more posts") { guest.postsPage(pageId, username, cursor) } ?: break
             } catch (e: IOException) {
-                log("⚠ ${e.message} - retrying in 15s")
-                delay(15_000)
-                try {
-                    guest.postsPage(pageId, username, cursor) ?: break
-                } catch (e2: IOException) {
-                    log("⚠ Stopped fetching posts: ${e2.message}. Run again later to continue.")
-                    return
-                }
+                log("⚠ Stopped fetching posts: ${e.message}. Run again later to continue.")
+                return
             }
         }
     }
@@ -150,7 +149,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             val conn = try {
                 if (useLogin) client.reelsPage(userPk, username, after)
                     ?: throw IgException("Reels query refused for this session")
-                else guest.reelsPage(userPk, username, after)
+                else withBackoff("reels") { guest.reelsPage(userPk, username, after) }
             } catch (e: IOException) {
                 if (!useLogin && loggedIn) {
                     log("Reels as guest refused (${e.message}); trying with your login…")
@@ -164,10 +163,15 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
                 break
             }
             val edges = conn.optJSONArray("edges") ?: JSONArray()
-            for (i in 0 until edges.length()) {
-                val media = edges.optJSONObject(i)?.optJSONObject("node")?.optJSONObject("media") ?: continue
-                count++
-                handleGuestPost(media, label = "reel")
+            try {
+                for (i in 0 until edges.length()) {
+                    val media = edges.optJSONObject(i)?.optJSONObject("node")?.optJSONObject("media") ?: continue
+                    count++
+                    handleGuestPost(media, label = "reel")
+                }
+            } catch (e: LimitedException) {
+                log("⏹ ${e.message} - skipping the remaining reels for now. Run again later to continue.")
+                break
             }
             val pi = conn.optJSONObject("page_info")
             if (pi == null || !pi.optBoolean("has_next_page")) break
@@ -175,6 +179,50 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             delay(opts.delayMs)
         }
         log("Reels processed: $count")
+    }
+
+    /** Instagram kept limiting logged-out requests even after backing off. */
+    private class LimitedException(message: String) : IOException(message)
+
+    private fun isLimit(e: IOException) =
+        e.message.orEmpty().let { "rate-limiting" in it || "asking for a login" in it }
+
+    /** Runs [block], waiting 1, 2 and 4 minutes when Instagram limits logged-out requests. */
+    private suspend fun <T> withBackoff(what: String, block: suspend () -> T): T {
+        var wait = 60_000L
+        repeat(3) {
+            try {
+                return block()
+            } catch (e: IOException) {
+                if (!isLimit(e)) throw e
+                log("⏸ Instagram is limiting requests ($what). Waiting ${wait / 60_000} min…")
+                delay(wait)
+                wait *= 2
+            }
+        }
+        try {
+            return block()
+        } catch (e: IOException) {
+            if (isLimit(e)) throw LimitedException("Instagram is still limiting requests")
+            throw e
+        }
+    }
+
+    /**
+     * True when a timeline/reels node already carries every media URL we need, so no per-post
+     * request is necessary (the big saver: Instagram allows only a few logged-out API calls).
+     */
+    private fun hasFullMedia(m: JSONObject): Boolean {
+        val carousel = m.optJSONArray("carousel_media")
+        val carouselCount = m.optInt("carousel_media_count", 0)
+        if (carouselCount > 1 || (carousel != null && carousel.length() > 0)) {
+            if (carousel == null || carousel.length() < maxOf(carouselCount, 1)) return false
+            return (0 until carousel.length()).all { carousel.optJSONObject(it)?.let(::hasFullMedia) == true }
+        }
+        val isVideo = m.optInt("media_type") == 2 || m.optString("product_type") == "clips"
+        val hasVideo = (m.optJSONArray("video_versions")?.length() ?: 0) > 0
+        val hasImage = (m.optJSONObject("image_versions2")?.optJSONArray("candidates")?.length() ?: 0) > 0
+        return if (isVideo) hasVideo else hasImage
     }
 
     /** One public post: full media via the logged-out post query, saved like handleMedia. */
@@ -199,7 +247,9 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             return
         }
         try {
-            val info = guest.post(code) ?: run {
+            val info = if (hasFullMedia(node)) {
+                JSONObject().put("items", JSONArray().put(node))
+            } else withBackoff("$label $code") { guest.post(code) } ?: run {
                 log("⚠ No media data for $key")
                 failedUrls += key
                 JobBus.stats { it.copy(failed = it.failed + 1) }
@@ -227,11 +277,12 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             dedup.save(key)
             log("✓ $label $code")
             delay(opts.delayMs)
+        } catch (e: LimitedException) {
+            throw e // let the section stop; the rest is picked up on the next run
         } catch (e: IOException) {
             log("✖ $label $key: ${e.message}")
             failedUrls += key
             JobBus.stats { it.copy(failed = it.failed + 1) }
-            if ("rate-limiting" in e.message.orEmpty() || "asking for a login" in e.message.orEmpty()) throw e
         } catch (e: JSONException) {
             log("✖ $key: unexpected response (${e.message})")
             failedUrls += key

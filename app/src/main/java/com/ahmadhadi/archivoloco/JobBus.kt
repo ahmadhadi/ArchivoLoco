@@ -34,7 +34,7 @@ data class JobState(
 
 /** Process-wide state shared by the service (writer) and the activity (reader). */
 object JobBus {
-    private const val MAX_LINES = 500
+    private const val MAX_LINES = 3000
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
     private val _state = MutableStateFlow(JobState())
     val state: StateFlow<JobState> = _state
@@ -49,4 +49,15 @@ object JobBus {
     fun start(title: String) = _state.update { JobState(running = true, title = title, lines = it.lines) }
 
     fun finish() = _state.update { it.copy(running = false) }
+
+    /** The whole log, oldest first, with a small header - for saving/sharing as .txt. */
+    fun exportText(appVersion: String): String = buildString {
+        val s = _state.value
+        append("ArchivoLoco $appVersion activity log\n")
+        append("Exported ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())}")
+        append(" · Android ${android.os.Build.VERSION.RELEASE}\n")
+        if (s.title.isNotEmpty()) append("Job: ${s.title} · ${s.stats.summary()}\n")
+        append("\n")
+        s.lines.forEach { append(it).append('\n') }
+    }
 }

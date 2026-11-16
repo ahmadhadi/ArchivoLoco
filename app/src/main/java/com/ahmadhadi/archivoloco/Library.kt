@@ -93,7 +93,7 @@ object Library {
 
     suspend fun list(ctx: Context): List<LibraryEntry> = withContext(Dispatchers.IO) {
         val byPath = scan(ctx)
-        byPath.keys.map { it.substringBefore('/') }.distinct().filter { it.isNotEmpty() }.map { folder ->
+        byPath.keys.map { it.substringBefore('/') }.distinct().filter { it.isNotEmpty() && it != "logs" }.map { folder ->
             val root = byPath["$folder/"].orEmpty()
             LibraryEntry(
                 folder = folder,

@@ -24,6 +24,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Share
+import android.widget.Toast
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Arrangement
@@ -690,6 +692,18 @@ private fun ActivityCard(lines: List<String>) {
                     )
                 }
                 Spacer(Modifier.weight(1f))
+                if (lines.isNotEmpty()) {
+                    val ctx = LocalContext.current
+                    androidx.compose.material3.IconButton(onClick = {
+                        runCatching { LogExport.save(ctx) }
+                            .onSuccess { Toast.makeText(ctx, "Saved to Download/ArchivoLoco/logs", Toast.LENGTH_SHORT).show() }
+                            .onFailure { Toast.makeText(ctx, "Couldn't save: ${it.message}", Toast.LENGTH_LONG).show() }
+                    }) { Icon(SaveIcon, "Save log as .txt", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    androidx.compose.material3.IconButton(onClick = {
+                        runCatching { LogExport.share(ctx) }
+                            .onFailure { Toast.makeText(ctx, "Couldn't share: ${it.message}", Toast.LENGTH_LONG).show() }
+                    }) { Icon(Icons.Filled.Share, "Share log as .txt", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
                 Icon(
                     if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
                     if (expanded) "Collapse" else "Expand",
@@ -731,3 +745,14 @@ private fun LogLine(text: String, maxLines: Int = Int.MAX_VALUE, modifier: Modif
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
+
+/** A download-to-tray glyph (drawn here; the core icon set has none). */
+private val SaveIcon: androidx.compose.ui.graphics.vector.ImageVector =
+    androidx.compose.ui.graphics.vector.ImageVector.Builder("save", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = androidx.compose.ui.graphics.vector.PathParser()
+                .parsePathString("M11,3h2v9.17l3.59,-3.58L18,10l-6,6l-6,-6l1.41,-1.41L11,12.17zM5,18h14v2H5z")
+                .toNodes(),
+            fill = androidx.compose.ui.graphics.SolidColor(Color.Black),
+        )
+    }.build()
