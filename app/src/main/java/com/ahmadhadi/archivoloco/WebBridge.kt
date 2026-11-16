@@ -90,6 +90,8 @@ class WebBridge(private val context: Context) {
         referrer: String = "${IgConstants.BASE}/",
         headers: Map<String, String> = emptyMap(),
         timeoutMs: Long = 60_000,
+        /** False for plain page loads (HTML): no XHR/app-id/CSRF headers. */
+        api: Boolean = true,
     ): BridgeResponse {
         require(path.startsWith("/")) { "Bridge paths must be same-origin" }
         open()
@@ -97,13 +99,13 @@ class WebBridge(private val context: Context) {
         val body = form?.entries?.joinToString("&") { (k, v) ->
             URLEncoder.encode(k, "UTF-8") + "=" + URLEncoder.encode(v, "UTF-8")
         }
-        val extra = JSONObject(IgConstants.API_HEADERS + headers)
+        val extra = JSONObject(if (api) IgConstants.API_HEADERS + headers else headers)
         val js = """
-            (function(id, method, path, body, extra, referrer) {
+            (function(id, method, path, body, extra, referrer, api) {
               window.__al = window.__al || {};
               var m = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
-              var h = Object.assign({'x-requested-with': 'XMLHttpRequest',
-                                     'x-csrftoken': m ? decodeURIComponent(m[1]) : ''}, extra);
+              var h = Object.assign(api ? {'x-requested-with': 'XMLHttpRequest',
+                                           'x-csrftoken': m ? decodeURIComponent(m[1]) : ''} : {}, extra);
               var opt = {method: method, headers: h, credentials: 'include',
                          redirect: 'manual', referrer: referrer};
               if (body !== null) { opt.body = body; h['content-type'] = 'application/x-www-form-urlencoded'; }
@@ -113,7 +115,7 @@ class WebBridge(private val context: Context) {
               }).catch(function(e) { window.__al[id] = {s: -1, b: String(e)}; });
               return 1;
             })(${JSONObject.quote(id)}, ${JSONObject.quote(method)}, ${JSONObject.quote(path)},
-               ${if (body == null) "null" else JSONObject.quote(body)}, $extra, ${JSONObject.quote(referrer)});
+               ${if (body == null) "null" else JSONObject.quote(body)}, $extra, ${JSONObject.quote(referrer)}, $api);
         """.trimIndent()
         eval(js)
 

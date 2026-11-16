@@ -89,8 +89,58 @@ class IgClient(context: Context, private val bridge: WebBridge) {
         return JSONObject(r.body)
     }
 
-    /** Port of InstagramClient.graphql_query. Returns the `data` object or null. */
+    /** Web-app tokens for api/graphql, read from the logged-in start page (instaloader _web_api_tokens). */
+    private data class WebTokens(val fbDtsg: String?, val lsd: String, val av: String?)
+    private var tokens: WebTokens? = null
+
+    private suspend fun webTokens(): WebTokens {
+        tokens?.let { return it }
+        val r = bridge.fetch("GET", "/", api = false, headers = mapOf("accept" to "text/html"))
+        if (r.status != 200) throw IgException("HTTP ${r.status} loading instagram.com")
+        val html = r.body
+        fun token(name: String) = Regex(""""$name",\[\],\{[^{}]*"token":"([^"]+)"""").find(html)?.groupValues?.get(1)
+        val lsd = token("LSD") ?: throw IgException("Instagram's start page didn't include the lsd token")
+        return WebTokens(
+            fbDtsg = token("DTSGInitialData"),
+            lsd = lsd,
+            av = Regex(""""IG_USER_EIMU":"?(\d+)""").find(html)?.groupValues?.get(1),
+        ).also { tokens = it }
+    }
+
+    /**
+     * GraphQL the way Instagram's web app sends it today: POST /api/graphql with the page's
+     * fb_dtsg / lsd tokens. Instagram now redirects logged-in requests to the older
+     * /graphql/query to its homepage.
+     */
+    private suspend fun apiGraphql(variables: JSONObject, docId: String, referrer: String): JSONObject? {
+        val t = webTokens()
+        val form = linkedMapOf(
+            "variables" to variables.toString(),
+            "doc_id" to docId,
+            "server_timestamps" to "true",
+            "lsd" to t.lsd,
+        )
+        t.av?.let { form["av"] = it }
+        t.fbDtsg?.let { dtsg ->
+            form["fb_dtsg"] = dtsg
+            form["jazoest"] = "2" + dtsg.sumOf { it.code }
+        }
+        val r = bridge.fetch("POST", "/api/graphql", form = form, referrer = referrer, headers = mapOf("x-fb-lsd" to t.lsd))
+        if (r.status == 302) check(r, "/api/graphql")
+        if (r.status !in 200..299) return null
+        val text = r.body.removePrefix("for (;;);").trim()
+        if (!text.startsWith("{")) return null
+        return JSONObject(text).optJSONObject("data")
+    }
+
+    /** Port of InstagramClient.graphql_query: api/graphql first, the classic endpoint as fallback. */
     suspend fun graphql(variables: JSONObject, docId: String, referrer: String = "${IgConstants.BASE}/"): JSONObject? {
+        val modern = try {
+            apiGraphql(variables, docId, referrer)
+        } catch (e: IgException) {
+            null
+        }
+        if (modern != null) return modern
         val r = bridge.fetch(
             "POST", "/graphql/query",
             form = mapOf("doc_id" to docId, "variables" to variables.toString()),
