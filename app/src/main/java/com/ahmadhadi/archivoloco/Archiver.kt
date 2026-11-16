@@ -297,61 +297,84 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
         }
     }
 
-    /** Highlights the instaloader way (query_hash GraphQL), falling back to the reel gallery query. */
+    private fun highlightSub(title: String, id: String): String {
+        // Keep any language's letters (e.g. Arabic titles), drop path-unsafe characters, add the id to stay unique.
+        val clean = title.filter { it.isLetterOrDigit() || it == ' ' || it == '-' || it == '_' }.trim()
+            .replace(' ', '_').take(40)
+        return "highlights/" + (if (clean.isEmpty()) "highlight" else clean) + "_" + safeFileName(id).takeLast(6)
+    }
+
+    /**
+     * Highlights: find the list (embedded in the profile page first - no extra API call - then the
+     * logged-in page, then the older queries), and fetch each highlight's items through the
+     * reel-gallery GraphQL query (the path that works with your login), with the classic query as
+     * fallback.
+     */
     private suspend fun archiveHighlights(userPk: String, username: String) {
-        val reels = try {
-            client.highlightReels(userPk, username)
-        } catch (e: IOException) {
-            if (e is SessionExpiredException) throw e
-            log("Highlights list (new method) failed: ${e.message}; trying the older method…")
-            try {
-                val ids = client.highlightIds(userPk)
-                log("Highlights: ${ids.size}")
-                if (ids.isNotEmpty()) archiveReels(ids, isHighlight = true, sub = "highlights")
-            } catch (e2: IOException) {
-                log("⚠ Highlights skipped: ${e2.message}")
+        var reels = guest.pageHighlights
+        if (reels.isEmpty()) {
+            reels = try {
+                GuestClient.highlightsIn(client.profilePageHtml(username))
+            } catch (e: IOException) {
+                if (e is SessionExpiredException) throw e
+                emptyList()
             }
+        }
+        if (reels.isEmpty()) reels = runCatching { client.highlightReels(userPk, username) }.getOrDefault(emptyList())
+        if (reels.isEmpty()) reels = runCatching { client.highlightIds(userPk).map { it to "" } }.getOrDefault(emptyList())
+        if (reels.isEmpty()) {
+            log("Highlights: none found on the profile")
             return
         }
         log("Highlights: ${reels.size}")
         for ((id, title) in reels) {
             currentCoroutineContext().ensureActive()
-            // Keep any language's letters (e.g. Arabic titles), drop path-unsafe characters, add the id to stay unique.
-            val clean = title.filter { it.isLetterOrDigit() || it == ' ' || it == '-' || it == '_' }.trim()
-                .replace(' ', '_').take(40)
-            val sub = "highlights/" + (if (clean.isEmpty()) "highlight" else clean) + "_" + safeFileName(id).takeLast(6)
-            try {
-                val items = client.storyItems(id, isHighlight = true, username)
-                var n = 0
-                for (i in 0 until items.length()) {
-                    items.optJSONObject(i)?.let { if (saveStoryItem(it, sub)) n++ }
-                }
-                log("✓ highlight \"${title.ifEmpty { id }}\": ${items.length()} items ($n new)")
+            val name = title.ifEmpty { id }
+            val sub = highlightSub(title, id)
+            var saved = try {
+                archiveReels(listOf(id), isHighlight = true, sub = sub, label = "highlight \"$name\"")
             } catch (e: IOException) {
                 if (e is SessionExpiredException) throw e
-                log("⚠ Highlight \"$title\": ${e.message}")
-                JobBus.stats { it.copy(failed = it.failed + 1) }
+                log("Highlight \"$name\" (gallery query) failed: ${e.message}")
+                -1
+            }
+            if (saved <= 0) {
+                // Fallback: classic query_hash query.
+                try {
+                    val items = client.storyItems(id, isHighlight = true, username)
+                    var n = 0
+                    for (i in 0 until items.length()) items.optJSONObject(i)?.let { if (saveStoryItem(it, sub)) n++ }
+                    if (items.length() > 0) log("✓ highlight \"$name\": ${items.length()} items ($n new)")
+                    saved = maxOf(saved, items.length())
+                } catch (e: IOException) {
+                    if (e is SessionExpiredException) throw e
+                    if (saved < 0) {
+                        log("⚠ Highlight \"$name\": ${e.message}")
+                        JobBus.stats { it.copy(failed = it.failed + 1) }
+                    }
+                }
             }
             delay(opts.delayMs)
         }
     }
 
+    /** Current stories: reel-gallery query first (works with your login), classic query as fallback. */
     private suspend fun archiveStories(userPk: String, username: String) {
-        try {
-            val items = client.storyItems(userPk, isHighlight = false, username)
-            var n = 0
-            for (i in 0 until items.length()) {
-                items.optJSONObject(i)?.let { if (saveStoryItem(it, "stories")) n++ }
-            }
-            log("Current stories: ${items.length()} ($n new)")
+        val n = try {
+            archiveReels(listOf(userPk), isHighlight = false, sub = "stories", label = "current story")
         } catch (e: IOException) {
             if (e is SessionExpiredException) throw e
-            log("Stories (new method) failed: ${e.message}; trying the older method…")
-            try {
-                archiveReels(listOf(userPk), isHighlight = false, sub = "stories")
-            } catch (e2: IOException) {
-                log("⚠ Stories skipped: ${e2.message}")
-            }
+            -1
+        }
+        if (n > 0) return
+        try {
+            val items = client.storyItems(userPk, isHighlight = false, username)
+            var saved = 0
+            for (i in 0 until items.length()) items.optJSONObject(i)?.let { if (saveStoryItem(it, "stories")) saved++ }
+            log("Current stories: ${items.length()} ($saved new)")
+        } catch (e: IOException) {
+            if (e is SessionExpiredException) throw e
+            if (n < 0) log("⚠ Stories skipped: ${e.message}") else log("Current stories: none")
         }
     }
 
@@ -390,7 +413,7 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
     }
 
     /** Port of ProfileScraper._dispatch_reel + save_reel_item. */
-    private suspend fun archiveReels(reelIds: List<String>, isHighlight: Boolean, sub: String) {
+    private suspend fun archiveReels(reelIds: List<String>, isHighlight: Boolean, sub: String, label: String? = null): Int {
         var after: String? = null
         var n = 0
         while (true) {
@@ -416,7 +439,10 @@ class Archiver(private val context: Context, private val opts: ArchiveOptions) {
             if (pi == null || !pi.optBoolean("has_next_page")) break
             after = pi.optString("end_cursor")
         }
-        log("${if (isHighlight) "Highlight" else "Story"} items processed: $n")
+        if (n > 0 || label == null) {
+            log(if (label != null) "✓ $label: $n items" else "${if (isHighlight) "Highlight" else "Story"} items processed: $n")
+        }
+        return n
     }
 
     // ---------------------------------------------------------------- saved mode

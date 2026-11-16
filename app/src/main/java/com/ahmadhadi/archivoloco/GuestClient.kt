@@ -33,6 +33,38 @@ class GuestClient {
         const val POST_DOC_ID = "27128499623469141" // media shortcode web_info
         const val REELS_DOC_ID = "7845543455542541" // PolarisProfileReelsTabContentQuery_connection
 
+        /**
+         * Highlight reels embedded in a profile page: any object whose id is "highlight:<n>",
+         * with its title. Works on logged-out and logged-in pages.
+         */
+        fun highlightsIn(html: String): List<Pair<String, String>> {
+            val found = LinkedHashMap<String, String>()
+            fun walk(v: Any?) {
+                when (v) {
+                    is JSONObject -> {
+                        val id = v.optString("id")
+                        if (id.startsWith("highlight:")) {
+                            val num = id.removePrefix("highlight:")
+                            if (num.all { it.isDigit() } && num.isNotEmpty()) {
+                                val title = v.optString("title")
+                                if (found[num].isNullOrEmpty()) found[num] = title
+                            }
+                        }
+                        val keys = v.keys()
+                        while (keys.hasNext()) walk(v.opt(keys.next()))
+                    }
+                    is JSONArray -> for (i in 0 until v.length()) walk(v.opt(i))
+                }
+            }
+            SCRIPT_JSON.findAll(html).forEach { m ->
+                runCatching { JSONTokener(m.groupValues[1]).nextValue() }.getOrNull()?.let(::walk)
+            }
+            if (found.isEmpty()) {
+                Regex(""""id":"highlight:(\d+)"""").findAll(html).forEach { found.putIfAbsent(it.groupValues[1], "") }
+            }
+            return found.map { it.key to it.value }
+        }
+
         fun reelsVariables(userPk: String, after: String?): JSONObject {
             val vars = JSONObject().put(
                 "data",
@@ -69,6 +101,10 @@ class GuestClient {
         .build()
 
     private var lsd: String? = null
+
+    /** Highlights (id, title) found embedded in the last profile page loaded. */
+    var pageHighlights: List<Pair<String, String>> = emptyList()
+        private set
     private var av: String? = null
 
     private suspend fun execute(req: Request): Pair<Int, String> = withContext(Dispatchers.IO) {
@@ -133,6 +169,7 @@ class GuestClient {
             val keys = part.keys()
             while (keys.hasNext()) { val k = keys.next(); user.put(k, part.get(k)) }
         }
+        pageHighlights = highlightsIn(html)
         if (user.optString("pk").isEmpty()) {
             throw IgException(
                 "Couldn't read @$username's profile page (Instagram may be limiting logged-out visits; try later).",

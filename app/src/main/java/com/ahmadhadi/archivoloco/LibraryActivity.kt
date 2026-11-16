@@ -7,6 +7,9 @@ import android.os.Bundle
 import android.text.format.DateUtils
 import android.widget.VideoView
 import android.widget.Toast
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.border
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material.icons.filled.Close
@@ -443,16 +446,17 @@ private fun ProfileHeader(p: ArchivedProfile, onOpenGallery: (String) -> Unit, o
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                if (p.fullName.isNotEmpty()) Text(p.fullName, fontWeight = FontWeight.SemiBold)
+                if (p.fullName.isNotEmpty()) Text(p.fullName, fontWeight = FontWeight.SemiBold, modifier = Modifier.longPressCopy(p.fullName))
                 Text(
                     "@${p.username}",
+                    modifier = Modifier.longPressCopy(p.username),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             IconButton(onClick = onCopy) { Icon(CopyIcon, "Copy username", Modifier.size(20.dp)) }
         }
-        if (p.bio.isNotEmpty()) Text(p.bio, style = MaterialTheme.typography.bodyMedium)
+        if (p.bio.isNotEmpty()) Text(p.bio, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.longPressCopy(p.bio))
         p.postCountOnInstagram?.let {
             Text(
                 "Archived ${p.posts.size} of $it posts on Instagram",
@@ -511,9 +515,13 @@ private fun PostCard(profile: ArchivedProfile, post: ArchivedPost, onComments: (
             Avatar(profile.picture, 34.dp)
             Spacer(Modifier.width(10.dp))
             Column {
-                Text(profile.username, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    profile.username, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.longPressCopy(profile.username),
+                )
                 post.location?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.longPressCopy(it))
                 }
             }
         }
@@ -562,7 +570,8 @@ private fun ExpandableCaption(username: String, caption: String) {
         style = MaterialTheme.typography.bodyMedium,
         maxLines = if (expanded) Int.MAX_VALUE else 3,
         overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.clickable { expanded = !expanded },
+        // Tap expands/collapses, long-press copies the caption.
+        modifier = Modifier.longPressCopy(caption) { expanded = !expanded },
     )
 }
 
@@ -577,6 +586,7 @@ private fun CommentLine(username: String, text: String) {
         style = MaterialTheme.typography.bodyMedium,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.longPressCopy(text),
     )
 }
 
@@ -701,7 +711,10 @@ private fun CommentsSheet(post: ArchivedPost, onDismiss: () -> Unit) {
 
 @Composable
 private fun CommentRow(c: Comment, indent: Int) {
-    Row(Modifier.fillMaxWidth().padding(start = 16.dp + 44.dp * indent, end = 16.dp, top = 10.dp, bottom = 6.dp)) {
+    Row(
+        Modifier.fillMaxWidth().longPressCopy(c.text)
+            .padding(start = 16.dp + 44.dp * indent, end = 16.dp, top = 10.dp, bottom = 6.dp),
+    ) {
         Box(
             Modifier.size(if (indent == 0) 34.dp else 26.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer),
             contentAlignment = Alignment.Center,
@@ -897,3 +910,25 @@ private val SaveToPhoneIcon: ImageVector = ImageVector.Builder("save_to_phone", 
         fill = SolidColor(Color.Black),
     )
 }.build()
+
+/**
+ * Long-press copies [text] to the clipboard (with a haptic tick). An optional [onClick] keeps a
+ * normal tap action, e.g. expanding a caption.
+ */
+@Composable
+fun Modifier.longPressCopy(text: String, onClick: (() -> Unit)? = null): Modifier {
+    val clipboard = LocalClipboardManager.current
+    val ctx = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    return this.combinedClickable(
+        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+        indication = null,
+        onClick = { onClick?.invoke() },
+        onLongClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            clipboard.setText(AnnotatedString(text))
+            // Android 13+ shows its own "Copied" confirmation.
+            if (android.os.Build.VERSION.SDK_INT < 33) Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
+        },
+    )
+}

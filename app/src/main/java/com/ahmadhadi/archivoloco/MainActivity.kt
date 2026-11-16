@@ -808,7 +808,7 @@ private fun ActivityCard(lines: List<String>) {
                         .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
                 ) {
                     Column(Modifier.verticalScroll(rememberScrollState())) {
-                        newestFirst.forEach { LogLine(it) }
+                        newestFirst.forEach { LogLine(it, modifier = Modifier.longPressCopy(it)) }
                     }
                 }
             }

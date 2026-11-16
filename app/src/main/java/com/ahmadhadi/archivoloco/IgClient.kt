@@ -219,6 +219,13 @@ class IgClient(context: Context, private val bridge: WebBridge) {
             ?.optJSONObject("xdt_api__v1__feed__user_timeline_graphql_connection")
     }
 
+    /** The profile's web page as the logged-in browser sees it (for embedded highlights). */
+    suspend fun profilePageHtml(username: String): String {
+        val r = bridge.fetch("GET", "/$username/", api = false, headers = mapOf("accept" to "text/html"))
+        if (r.status != 200) throw IgException("HTTP ${r.status} loading the profile page")
+        return r.body
+    }
+
     /** Classic query_hash GraphQL (GET), as instaloader uses for stories and highlights. */
     private suspend fun queryHash(hash: String, variables: JSONObject, referer: String): JSONObject? =
         getJson(
